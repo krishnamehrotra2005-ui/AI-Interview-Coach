@@ -19,7 +19,7 @@ A complete, zero-cost, voice-enabled **Mock Interview Coach** powered by **Strea
      - **🔴 Skill Gaps**: Low-similarity areas representing missing or unmentioned JD skills to probe in the interview.
 
 3. **🤖 Batched Gemini Question Generation (Free-Tier Friendly)**:
-   - Makes **one single batched call** to Google Gemini 1.5 Flash to generate 5 tailored interview questions:
+   - Makes **one single batched call** to Google Gemini Flash (`gemini-3.6-flash` / `gemini-flash-latest`) to generate 5 tailored interview questions:
      - 2 questions on matching skills & candidate projects
      - 2 questions on identified skill gaps & JD requirements
      - 1 role-specific behavioral/problem-solving question
