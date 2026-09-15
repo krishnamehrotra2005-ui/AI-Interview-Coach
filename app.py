@@ -488,25 +488,49 @@ with tab_interview:
 
         # VOICE INPUT PATH
         if input_mode == "🎤 Speak your answer":
-            st.markdown("Click **Start Speaking** to record your voice. Your answer will be transcribed automatically.")
-            col_rec, col_clear = st.columns([1, 1])
-            with col_rec:
-                if st.button("🔴 Start Speaking", type="secondary"):
-                    with st.spinner("🎙️ Listening... Please speak clearly into your microphone now..."):
+            st.markdown("Record your answer below using your microphone. Your speech will be automatically transcribed.")
+
+            # 1. Native in-browser audio recording (works reliably on local and cloud)
+            recorded_audio = st.audio_input(
+                "🎙️ Click the red circle to record, speak your answer, and click stop:",
+                key=f"audio_record_{q_idx}"
+            )
+
+            # Auto-transcribe recorded browser audio
+            if recorded_audio is not None:
+                audio_bytes = recorded_audio.read()
+                audio_hash = f"transcribed_{q_idx}_{len(audio_bytes)}"
+                if st.session_state.get("last_transcribed_hash") != audio_hash:
+                    with st.spinner("Transcribing your audio with SpeechRecognition..."):
+                        ok, trans_text = tts_stt.transcribe_audio_bytes(audio_bytes)
+                        if ok:
+                            st.session_state[f"voice_edit_box_{q_idx}"] = trans_text
+                            st.session_state.voice_transcription = trans_text
+                            st.session_state["last_transcribed_hash"] = audio_hash
+                            st.success("Transcribed successfully!")
+                            st.rerun()
+                        else:
+                            st.warning(trans_text)
+
+            # 2. Alternative option: Direct host microphone capture (PyAudio)
+            with st.expander("🛠️ Alternative: Record directly from local hardware mic (PyAudio)", expanded=False):
+                if st.button("🔴 Start Hardware Mic Capture", key=f"py_mic_btn_{q_idx}"):
+                    with st.spinner("🎙️ Listening to local microphone... Please speak now..."):
                         rec_ok, rec_result = tts_stt.record_and_transcribe()
                         if rec_ok:
+                            st.session_state[f"voice_edit_box_{q_idx}"] = rec_result
                             st.session_state.voice_transcription = rec_result
                             st.success("Transcribed successfully!")
+                            st.rerun()
                         else:
                             st.warning(rec_result)
 
-            with col_clear:
-                if st.button("Clear Recording"):
-                    st.session_state.voice_transcription = ""
+            # Ensure session state key exists
+            if f"voice_edit_box_{q_idx}" not in st.session_state:
+                st.session_state[f"voice_edit_box_{q_idx}"] = st.session_state.voice_transcription
 
             final_answer_text = st.text_area(
                 "Your Transcribed Answer (feel free to review or edit before submitting):",
-                value=st.session_state.voice_transcription,
                 height=140,
                 key=f"voice_edit_box_{q_idx}"
             )
