@@ -1,0 +1,31 @@
+# Environments and secrets
+.env
+.env.local
+.streamlit/secrets.toml
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Local SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Audio and temporary media files
+temp_audio/
+*.mp3
+*.wav
+
+# OS artifacts
+Thumbs.db
+.DS_Store
