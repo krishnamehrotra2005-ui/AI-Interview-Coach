@@ -31,7 +31,8 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
     """
     Initializes the SQLite database and creates the 'sessions' table if not already present.
     """
-    with get_connection(db_path) as conn:
+    conn = get_connection(db_path)
+    try:
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
@@ -47,6 +48,8 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             )
         """)
         conn.commit()
+    finally:
+        conn.close()
 
 
 def save_session(
@@ -61,24 +64,12 @@ def save_session(
 ) -> int:
     """
     Saves a completed interview answer evaluation to the database.
-
-    Args:
-        question: The interview question asked.
-        answer: The candidate's response (from voice transcription or text typing).
-        input_mode: 'Voice' or 'Text'.
-        score: Numerical score out of 10.
-        feedback: Evaluation notes and constructive feedback.
-        resume_name: Name of the uploaded resume document.
-        jd_title: Job description title or label.
-        db_path: SQLite database file path.
-
-    Returns:
-        The inserted row ID.
     """
     init_db(db_path)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    with get_connection(db_path) as conn:
+    conn = get_connection(db_path)
+    try:
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO sessions (
@@ -96,6 +87,8 @@ def save_session(
         ))
         conn.commit()
         return cursor.lastrowid
+    finally:
+        conn.close()
 
 
 def get_all_sessions(db_path: str = DEFAULT_DB_PATH) -> pd.DataFrame:
@@ -103,7 +96,8 @@ def get_all_sessions(db_path: str = DEFAULT_DB_PATH) -> pd.DataFrame:
     Loads all recorded interview attempts from SQLite into a Pandas DataFrame.
     """
     init_db(db_path)
-    with get_connection(db_path) as conn:
+    conn = get_connection(db_path)
+    try:
         query = """
             SELECT 
                 id,
@@ -119,6 +113,8 @@ def get_all_sessions(db_path: str = DEFAULT_DB_PATH) -> pd.DataFrame:
             ORDER BY id DESC
         """
         df = pd.read_sql_query(query, conn)
+    finally:
+        conn.close()
     return df
 
 
