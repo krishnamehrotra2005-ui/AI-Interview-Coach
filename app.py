@@ -287,6 +287,8 @@ def init_session_state():
         st.session_state.answer_submitted = False
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(int(time.time()))
+    if "speech_speed" not in st.session_state:
+        st.session_state.speech_speed = 1.28
 
 
 init_session_state()
@@ -311,6 +313,19 @@ with st.sidebar:
         )
         if api_key:
             st.info("API Key entered for this session.")
+        st.session_state.gemini_api_key = api_key
+
+    st.markdown("---")
+    st.markdown("### 🔊 Voice Settings")
+    speech_speed = st.slider(
+        "Interviewer Speech Pace",
+        min_value=1.10,
+        max_value=1.50,
+        value=float(st.session_state.get("speech_speed", 1.28)),
+        step=0.05,
+        help="Fast, conversational human pacing. 1.28x matches natural human interview conversation (~180 words/minute)."
+    )
+    st.session_state.speech_speed = speech_speed
 
     st.markdown("---")
     st.markdown("### 🛠️ Technology Stack")
@@ -472,20 +487,29 @@ with tab_interview:
         st.markdown(f"### Question {q_idx + 1}: *{current_q.get('category', 'Technical')}*")
         st.info(f"🗣️ **\"{current_q.get('question')}\"**")
 
-        # Ensure question audio filename is unique to this question AND interview session
-        audio_filename = f"q_{q_idx + 1}_{st.session_state.session_id}.mp3"
+        # Ensure question audio filename is unique to this question, interview session, and speed setting
+        speed_factor = float(st.session_state.get("speech_speed", 1.28))
+        audio_filename = f"q_{q_idx + 1}_{st.session_state.session_id}_{int(speed_factor * 100)}.wav"
         audio_filepath = os.path.abspath(os.path.join(tts_stt.AUDIO_CACHE_DIR, audio_filename))
 
         # Synthesize question speech if not yet created for this question in this session
         if not os.path.exists(audio_filepath):
-            success, saved_file = tts_stt.speak_text(current_q.get("question"), filename=audio_filename)
+            success, saved_file = tts_stt.speak_text(
+                current_q.get("question"),
+                filename=audio_filename,
+                speed=speed_factor
+            )
             if success:
                 st.session_state.current_audio_path = saved_file
             st.session_state.last_played_q = q_idx
         elif st.session_state.last_played_q != q_idx:
             st.session_state.current_audio_path = audio_filepath
             st.session_state.last_played_q = q_idx
-            tts_stt.speak_text(current_q.get("question"), filename=audio_filename)
+            tts_stt.speak_text(
+                current_q.get("question"),
+                filename=audio_filename,
+                speed=speed_factor
+            )
 
         # In-browser audio player with autoplay + Replay button
         col_audio_player, col_replay = st.columns([3, 1])
@@ -494,13 +518,17 @@ with tab_interview:
                 with open(audio_filepath, "rb") as f:
                     q_audio_bytes = f.read()
                 # Embed audio player for in-browser playback/review without simultaneous auto-play
-                st.audio(q_audio_bytes, format="audio/mp3", autoplay=False)
+                st.audio(q_audio_bytes, format="audio/wav", autoplay=False)
             else:
                 st.caption("🔊 Audio generating...")
 
         with col_replay:
             if st.button("🔊 Replay Audio", key=f"replay_btn_{q_idx}"):
-                tts_stt.speak_text(current_q.get("question"), filename=audio_filename)
+                tts_stt.speak_text(
+                    current_q.get("question"),
+                    filename=audio_filename,
+                    speed=speed_factor
+                )
                 st.rerun()
 
         st.markdown("---")

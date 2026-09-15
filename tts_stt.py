@@ -16,7 +16,10 @@ This module handles:
 import os
 import io
 import re
+import time
 import wave
+import shutil
+import subprocess
 from typing import Tuple, Optional
 from gtts import gTTS
 import pygame
@@ -140,48 +143,182 @@ def clean_transcribed_text(text: str) -> str:
     return cleaned
 
 
-def speak_text(text: str, filename: str = "question.mp3") -> Tuple[bool, str]:
+def time_stretch_audio(signal: np.ndarray, speed: float = 1.28, sample_rate: int = 44100) -> np.ndarray:
     """
-    Converts text to speech using gTTS, saves it as an MP3 file,
-    and plays it through host speakers via pygame.mixer.
-    Uses 'co.uk' accent for crisp, natural, professional interview pacing.
+    Time-scale modification using WSOLA (Waveform Similarity Overlap-Add)
+    to accelerate audio playback to natural conversational interview speed (~170-185 WPM)
+    without altering pitch.
+
+    Args:
+        signal: 1D or 2D numpy array of audio PCM samples (int16).
+        speed: Speedup factor (e.g. 1.28 for natural conversational pace).
+        sample_rate: Audio sampling frequency in Hz (typically 44100).
+
+    Returns:
+        np.ndarray: Accelerated int16 audio array with original pitch preserved.
+    """
+    if abs(speed - 1.0) < 0.02 or len(signal) == 0:
+        return signal
+
+    is_stereo = (signal.ndim == 2 and signal.shape[1] == 2)
+    mono_ref = signal.mean(axis=1).astype(np.float32) if is_stereo else signal.astype(np.float32)
+
+    # Frame window ~30ms
+    win_len = int(sample_rate * 0.030)
+    if win_len % 2 != 0:
+        win_len += 1
+    hop_syn = win_len // 2
+    hop_ana = int(hop_syn * speed)
+    delta_max = win_len // 4
+
+    window = np.hanning(win_len).astype(np.float32)
+    window_expanded = window[:, np.newaxis] if is_stereo else window
+
+    total_samples = len(signal)
+    num_frames = int((total_samples - win_len - delta_max) / hop_ana)
+    if num_frames <= 0:
+        return signal
+
+    out_len = int(total_samples / speed) + win_len * 2
+    output = np.zeros((out_len, signal.shape[1]) if is_stereo else (out_len,), dtype=np.float32)
+    weight = np.zeros(out_len, dtype=np.float32)
+
+    # Place initial windowed frame
+    output[0:win_len] += signal[0:win_len] * window_expanded
+    weight[0:win_len] += window
+    prev_ana = 0
+    pos_syn = 0
+
+    for _ in range(1, num_frames):
+        pos_syn += hop_syn
+        target_ana = prev_ana + hop_ana
+
+        search_start = max(0, target_ana - delta_max)
+        search_end = min(total_samples - win_len, target_ana + delta_max)
+        if search_start >= search_end:
+            break
+
+        ref_seg = mono_ref[prev_ana + hop_syn : prev_ana + hop_syn + delta_max]
+        ref_len = len(ref_seg)
+        num_cands = search_end - search_start
+        if num_cands <= 0 or ref_len == 0:
+            break
+
+        # Fast vectorized similarity comparison across candidate shifts
+        cands = np.lib.stride_tricks.as_strided(
+            mono_ref[search_start:],
+            shape=(num_cands, ref_len),
+            strides=(mono_ref.strides[0], mono_ref.strides[0])
+        )
+        diffs = np.sum(np.abs(cands - ref_seg), axis=1)
+        best_cand_idx = int(np.argmin(diffs))
+        actual_ana = search_start + best_cand_idx
+
+        if actual_ana + win_len > total_samples or pos_syn + win_len > out_len:
+            break
+
+        output[pos_syn : pos_syn + win_len] += signal[actual_ana : actual_ana + win_len] * window_expanded
+        weight[pos_syn : pos_syn + win_len] += window
+        prev_ana = actual_ana
+
+    valid_weight = weight > 1e-4
+    if is_stereo:
+        output[valid_weight] /= weight[valid_weight, np.newaxis]
+    else:
+        output[valid_weight] /= weight[valid_weight]
+
+    last_valid = np.max(np.where(valid_weight)[0]) if np.any(valid_weight) else 0
+    return np.clip(output[:last_valid + 1], -32768, 32767).astype(np.int16)
+
+
+def speak_text(text: str, filename: str = "question.wav", speed: float = 1.28) -> Tuple[bool, str]:
+    """
+    Converts text to speech using gTTS, time-stretches the audio to natural conversational
+    interview pace (~170-185 WPM) without altering pitch, and plays it locally via pygame.mixer.
+    Also provides audio file paths for Streamlit in-browser playback.
 
     Args:
         text: The interview question text to speak aloud.
-        filename: Destination MP3 file name.
+        filename: Destination audio filename (.wav or .mp3). Defaults to 'question.wav'.
+        speed: Speech pacing multiplier (default: 1.28x for natural conversational human pacing).
 
     Returns:
         (success: bool, audio_filepath: str)
     """
     ensure_audio_dir()
+
+    # Normalize destination paths
+    if not (filename.endswith(".wav") or filename.endswith(".mp3")):
+        filename = filename + ".wav"
     filepath = os.path.abspath(os.path.join(AUDIO_CACHE_DIR, filename))
+    base_no_ext, ext = os.path.splitext(filepath)
+    wav_filepath = base_no_ext + ".wav"
 
     # Preprocess text so acronyms like EDA are pronounced cleanly as E-D-A
     spoken_text = preprocess_text_for_speech(text)
 
     try:
-        # Generate crisp, natural speech using British English TLD for professional pacing
+        # Step 1: Synthesize base speech using gTTS into a temporary file
+        temp_id = f"{os.getpid()}_{int(time.time() * 1000)}"
+        temp_mp3 = os.path.join(AUDIO_CACHE_DIR, f"_raw_temp_{temp_id}.mp3")
         tts = gTTS(text=spoken_text, lang="en", tld="co.uk", slow=False)
-        tts.save(filepath)
+        tts.save(temp_mp3)
 
-        # Play audio locally using pygame
+        # Step 2: Ensure pygame mixer is initialized
+        if not pygame.mixer.get_init():
+            pygame.mixer.pre_init(44100, -16, 2, 2048)
+            pygame.mixer.init()
+
+        # Step 3: Load raw audio into numpy array for speed adjustment
+        sound = pygame.mixer.Sound(temp_mp3)
+        raw_arr = pygame.sndarray.array(sound)
+
+        # Step 4: Apply time-stretching if speed != 1.0 (defaults to 1.28x for conversational speed)
+        if abs(speed - 1.0) > 0.02 and len(raw_arr) > 0:
+            sped_arr = time_stretch_audio(raw_arr, speed=speed, sample_rate=44100)
+        else:
+            sped_arr = raw_arr
+
+        # Step 5: Save high-quality WAV file
+        wavfile.write(wav_filepath, 44100, sped_arr)
+
+        # Clean up temporary mp3
         try:
-            if not pygame.mixer.get_init():
-                pygame.mixer.pre_init(44100, -16, 2, 2048)
-                pygame.mixer.init()
+            if os.path.exists(temp_mp3):
+                os.remove(temp_mp3)
+        except Exception:
+            pass
 
+        # Step 6: If an MP3 was explicitly requested, create MP3 copy via ffmpeg if available
+        final_filepath = wav_filepath
+        if ext.lower() == ".mp3":
+            ffmpeg_exe = shutil.which("ffmpeg")
+            if ffmpeg_exe:
+                try:
+                    subprocess.run(
+                        [ffmpeg_exe, "-y", "-i", wav_filepath, "-b:a", "192k", filepath],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    final_filepath = filepath
+                except Exception:
+                    final_filepath = wav_filepath
+            else:
+                final_filepath = wav_filepath
+
+        # Step 7: Play audio locally through host speakers via pygame.mixer.music
+        try:
             pygame.mixer.music.set_volume(1.0)
-
             if pygame.mixer.music.get_busy():
                 pygame.mixer.music.stop()
             pygame.mixer.music.unload()
-
-            pygame.mixer.music.load(filepath)
+            pygame.mixer.music.load(final_filepath)
             pygame.mixer.music.play()
         except Exception as audio_device_err:
             print(f"[Notice] Pygame audio playback skipped (headless or no soundcard): {audio_device_err}")
 
-        return True, filepath
+        return True, final_filepath
 
     except Exception as e:
         print(f"[Error] TTS generation failed: {e}")
