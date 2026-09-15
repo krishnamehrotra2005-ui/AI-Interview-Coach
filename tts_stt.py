@@ -25,7 +25,8 @@ import speech_recognition as sr
 import numpy as np
 from scipy.io import wavfile
 
-AUDIO_CACHE_DIR = "temp_audio"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+AUDIO_CACHE_DIR = os.path.join(BASE_DIR, "temp_audio")
 
 
 def ensure_audio_dir() -> str:
@@ -47,7 +48,7 @@ def speak_text(text: str, filename: str = "question.mp3") -> Tuple[bool, str]:
         (success: bool, audio_filepath: str)
     """
     ensure_audio_dir()
-    filepath = os.path.join(AUDIO_CACHE_DIR, filename)
+    filepath = os.path.abspath(os.path.join(AUDIO_CACHE_DIR, filename))
 
     try:
         # 1. Generate speech with gTTS
@@ -58,8 +59,11 @@ def speak_text(text: str, filename: str = "question.mp3") -> Tuple[bool, str]:
         try:
             # Initialize mixer if not already initialized
             if not pygame.mixer.get_init():
+                pygame.mixer.pre_init(44100, -16, 2, 2048)
                 pygame.mixer.init()
-            
+
+            pygame.mixer.music.set_volume(1.0)
+
             # Stop any previously playing audio before loading new track
             if pygame.mixer.music.get_busy():
                 pygame.mixer.music.stop()

@@ -21,11 +21,18 @@ import pandas as pd
 from dotenv import load_dotenv
 import google.generativeai as genai
 
+import importlib
 # Import modular backend components
 import parsing
 import rag
 import tts_stt
 import db
+
+# Force fresh reload of custom modules on every Streamlit script execution
+importlib.reload(parsing)
+importlib.reload(rag)
+importlib.reload(tts_stt)
+importlib.reload(db)
 
 # -----------------------------------------------------------------------------
 # Configuration & Environment Setup
@@ -459,21 +466,32 @@ with tab_interview:
         st.markdown(f"### Question {q_idx + 1}: *{current_q.get('category', 'Technical')}*")
         st.info(f"🗣️ **\"{current_q.get('question')}\"**")
 
+        # Always ensure the question audio file exists
+        audio_filename = f"q_{q_idx + 1}.mp3"
+        audio_filepath = os.path.abspath(os.path.join(tts_stt.AUDIO_CACHE_DIR, audio_filename))
+
         # Automatically speak question aloud on first visit via gTTS + pygame
-        if st.session_state.last_played_q != q_idx:
-            success, audio_file = tts_stt.speak_text(current_q.get("question"), filename=f"q_{q_idx + 1}.mp3")
+        if st.session_state.last_played_q != q_idx or not os.path.exists(audio_filepath):
+            success, saved_file = tts_stt.speak_text(current_q.get("question"), filename=audio_filename)
             if success:
-                st.session_state.current_audio_path = audio_file
+                st.session_state.current_audio_path = saved_file
             st.session_state.last_played_q = q_idx
 
-        # In-browser audio replay option
+        # In-browser audio player with autoplay + Replay button
         col_audio_player, col_replay = st.columns([3, 1])
         with col_audio_player:
-            if st.session_state.current_audio_path and os.path.exists(st.session_state.current_audio_path):
-                st.audio(st.session_state.current_audio_path, format="audio/mp3")
+            if os.path.exists(audio_filepath):
+                with open(audio_filepath, "rb") as f:
+                    q_audio_bytes = f.read()
+                # Embed audio bytes directly with autoplay enabled
+                st.audio(q_audio_bytes, format="audio/mp3", autoplay=True)
+            else:
+                st.caption("🔊 Audio generating...")
+
         with col_replay:
-            if st.button("🔊 Replay Audio"):
-                tts_stt.speak_text(current_q.get("question"), filename=f"q_{q_idx + 1}.mp3")
+            if st.button("🔊 Replay Audio", key=f"replay_btn_{q_idx}"):
+                tts_stt.speak_text(current_q.get("question"), filename=audio_filename)
+                st.rerun()
 
         st.markdown("---")
 
@@ -488,11 +506,33 @@ with tab_interview:
 
         # VOICE INPUT PATH
         if input_mode == "🎤 Speak your answer":
-            st.markdown("Record your answer below using your microphone. Your speech will be automatically transcribed.")
+            st.markdown("#### 🎙️ Voice Answer Input")
+            st.caption("Choose either method below to speak your response:")
 
-            # 1. Native in-browser audio recording (works reliably on local and cloud)
+            col_btn_rec, col_btn_clear = st.columns([2, 1])
+            with col_btn_rec:
+                # Primary Red Button: One-click microphone recording via SpeechRecognition
+                if st.button("🔴 Click to Speak into Microphone", type="primary", key=f"rec_mic_btn_{q_idx}"):
+                    with st.spinner("🎙️ Listening to your microphone... Please speak your answer clearly now..."):
+                        rec_ok, rec_result = tts_stt.record_and_transcribe(timeout=10, phrase_time_limit=35)
+                        if rec_ok:
+                            st.session_state[f"voice_edit_box_{q_idx}"] = rec_result
+                            st.session_state.voice_transcription = rec_result
+                            st.success("✅ Speech transcribed successfully!")
+                            st.rerun()
+                        else:
+                            st.warning(f"⚠️ {rec_result}")
+
+            with col_btn_clear:
+                if st.button("🗑️ Clear Answer", key=f"clear_btn_{q_idx}"):
+                    st.session_state[f"voice_edit_box_{q_idx}"] = ""
+                    st.session_state.voice_transcription = ""
+                    st.rerun()
+
+            st.markdown("##### *Or use the browser audio recorder below:*")
+            # In-browser audio recording widget
             recorded_audio = st.audio_input(
-                "🎙️ Click the red circle to record, speak your answer, and click stop:",
+                "Record directly in browser (click mic to start/stop):",
                 key=f"audio_record_{q_idx}"
             )
 
@@ -502,35 +542,28 @@ with tab_interview:
                 audio_hash = f"transcribed_{q_idx}_{len(audio_bytes)}"
                 if st.session_state.get("last_transcribed_hash") != audio_hash:
                     with st.spinner("Transcribing your audio with SpeechRecognition..."):
-                        ok, trans_text = tts_stt.transcribe_audio_bytes(audio_bytes)
+                        if hasattr(tts_stt, "transcribe_audio_bytes"):
+                            ok, trans_text = tts_stt.transcribe_audio_bytes(audio_bytes)
+                        else:
+                            import importlib
+                            importlib.reload(tts_stt)
+                            ok, trans_text = tts_stt.transcribe_audio_bytes(audio_bytes)
+
                         if ok:
                             st.session_state[f"voice_edit_box_{q_idx}"] = trans_text
                             st.session_state.voice_transcription = trans_text
                             st.session_state["last_transcribed_hash"] = audio_hash
-                            st.success("Transcribed successfully!")
+                            st.success("✅ Transcribed successfully!")
                             st.rerun()
                         else:
-                            st.warning(trans_text)
-
-            # 2. Alternative option: Direct host microphone capture (PyAudio)
-            with st.expander("🛠️ Alternative: Record directly from local hardware mic (PyAudio)", expanded=False):
-                if st.button("🔴 Start Hardware Mic Capture", key=f"py_mic_btn_{q_idx}"):
-                    with st.spinner("🎙️ Listening to local microphone... Please speak now..."):
-                        rec_ok, rec_result = tts_stt.record_and_transcribe()
-                        if rec_ok:
-                            st.session_state[f"voice_edit_box_{q_idx}"] = rec_result
-                            st.session_state.voice_transcription = rec_result
-                            st.success("Transcribed successfully!")
-                            st.rerun()
-                        else:
-                            st.warning(rec_result)
+                            st.warning(f"⚠️ {trans_text}")
 
             # Ensure session state key exists
             if f"voice_edit_box_{q_idx}" not in st.session_state:
                 st.session_state[f"voice_edit_box_{q_idx}"] = st.session_state.voice_transcription
 
             final_answer_text = st.text_area(
-                "Your Transcribed Answer (feel free to review or edit before submitting):",
+                "Your Transcribed Answer (review or edit before submitting):",
                 height=140,
                 key=f"voice_edit_box_{q_idx}"
             )
