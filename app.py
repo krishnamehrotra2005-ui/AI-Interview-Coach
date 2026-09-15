@@ -13,6 +13,8 @@ This is the main entry point of the project. It orchestrates:
 """
 
 import os
+import time
+import uuid
 import json
 import re
 from typing import List, Dict, Any, Optional
@@ -283,6 +285,8 @@ def init_session_state():
         st.session_state.voice_transcription = ""
     if "answer_submitted" not in st.session_state:
         st.session_state.answer_submitted = False
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = str(int(time.time()))
 
 
 init_session_state()
@@ -434,6 +438,8 @@ with tab_interview:
                     st.session_state.questions = questions
                     st.session_state.current_q_idx = 0
                     st.session_state.last_played_q = -1
+                    st.session_state.current_audio_path = None
+                    st.session_state.session_id = str(int(time.time()))
                     st.session_state.stage = "interview"
                     st.session_state.current_eval = None
                     st.rerun()
@@ -466,16 +472,20 @@ with tab_interview:
         st.markdown(f"### Question {q_idx + 1}: *{current_q.get('category', 'Technical')}*")
         st.info(f"🗣️ **\"{current_q.get('question')}\"**")
 
-        # Always ensure the question audio file exists
-        audio_filename = f"q_{q_idx + 1}.mp3"
+        # Ensure question audio filename is unique to this question AND interview session
+        audio_filename = f"q_{q_idx + 1}_{st.session_state.session_id}.mp3"
         audio_filepath = os.path.abspath(os.path.join(tts_stt.AUDIO_CACHE_DIR, audio_filename))
 
-        # Automatically speak question aloud on first visit via gTTS + pygame
-        if st.session_state.last_played_q != q_idx or not os.path.exists(audio_filepath):
+        # Synthesize question speech if not yet created for this question in this session
+        if not os.path.exists(audio_filepath):
             success, saved_file = tts_stt.speak_text(current_q.get("question"), filename=audio_filename)
             if success:
                 st.session_state.current_audio_path = saved_file
             st.session_state.last_played_q = q_idx
+        elif st.session_state.last_played_q != q_idx:
+            st.session_state.current_audio_path = audio_filepath
+            st.session_state.last_played_q = q_idx
+            tts_stt.speak_text(current_q.get("question"), filename=audio_filename)
 
         # In-browser audio player with autoplay + Replay button
         col_audio_player, col_replay = st.columns([3, 1])
@@ -507,33 +517,12 @@ with tab_interview:
         # VOICE INPUT PATH
         if input_mode == "🎤 Speak your answer":
             st.markdown("#### 🎙️ Voice Answer Input")
-            st.caption("Choose either method below to speak your response:")
+            st.info("👇 **Click the red microphone circle below to record. Speak your answer, then click the stop button.** Your speech will be automatically transcribed.")
 
-            col_btn_rec, col_btn_clear = st.columns([2, 1])
-            with col_btn_rec:
-                # Primary Red Button: One-click microphone recording via SpeechRecognition
-                if st.button("🔴 Click to Speak into Microphone", type="primary", key=f"rec_mic_btn_{q_idx}"):
-                    with st.spinner("🎙️ Listening to your microphone... Please speak your answer clearly now..."):
-                        rec_ok, rec_result = tts_stt.record_and_transcribe(timeout=10, phrase_time_limit=35)
-                        if rec_ok:
-                            st.session_state[f"voice_edit_box_{q_idx}"] = rec_result
-                            st.session_state.voice_transcription = rec_result
-                            st.success("✅ Speech transcribed successfully!")
-                            st.rerun()
-                        else:
-                            st.warning(f"⚠️ {rec_result}")
-
-            with col_btn_clear:
-                if st.button("🗑️ Clear Answer", key=f"clear_btn_{q_idx}"):
-                    st.session_state[f"voice_edit_box_{q_idx}"] = ""
-                    st.session_state.voice_transcription = ""
-                    st.rerun()
-
-            st.markdown("##### *Or use the browser audio recorder below:*")
-            # In-browser audio recording widget
+            # Browser audio recorder with native Start / Stop / Live Timer / Waveform
             recorded_audio = st.audio_input(
-                "Record directly in browser (click mic to start/stop):",
-                key=f"audio_record_{q_idx}"
+                "Record your answer:",
+                key=f"audio_record_{q_idx}_{st.session_state.session_id}"
             )
 
             # Auto-transcribe recorded browser audio
@@ -541,31 +530,35 @@ with tab_interview:
                 audio_bytes = recorded_audio.read()
                 audio_hash = f"transcribed_{q_idx}_{len(audio_bytes)}"
                 if st.session_state.get("last_transcribed_hash") != audio_hash:
-                    with st.spinner("Transcribing your audio with SpeechRecognition..."):
-                        if hasattr(tts_stt, "transcribe_audio_bytes"):
-                            ok, trans_text = tts_stt.transcribe_audio_bytes(audio_bytes)
-                        else:
-                            import importlib
-                            importlib.reload(tts_stt)
-                            ok, trans_text = tts_stt.transcribe_audio_bytes(audio_bytes)
-
+                    with st.spinner("🎙️ Transcribing your speech with SpeechRecognition..."):
+                        ok, trans_text = tts_stt.transcribe_audio_bytes(audio_bytes)
                         if ok:
                             st.session_state[f"voice_edit_box_{q_idx}"] = trans_text
                             st.session_state.voice_transcription = trans_text
                             st.session_state["last_transcribed_hash"] = audio_hash
-                            st.success("✅ Transcribed successfully!")
+                            st.success("✅ Transcribed successfully! Review or edit below:")
                             st.rerun()
                         else:
                             st.warning(f"⚠️ {trans_text}")
+
+            col_ans_header, col_ans_clear = st.columns([3, 1])
+            with col_ans_header:
+                st.markdown("**Your Transcribed Answer** *(feel free to review or edit before submitting):*")
+            with col_ans_clear:
+                if st.button("🗑️ Clear Answer", key=f"clear_btn_{q_idx}"):
+                    st.session_state[f"voice_edit_box_{q_idx}"] = ""
+                    st.session_state.voice_transcription = ""
+                    st.rerun()
 
             # Ensure session state key exists
             if f"voice_edit_box_{q_idx}" not in st.session_state:
                 st.session_state[f"voice_edit_box_{q_idx}"] = st.session_state.voice_transcription
 
             final_answer_text = st.text_area(
-                "Your Transcribed Answer (review or edit before submitting):",
+                "Your Transcribed Answer",
                 height=140,
-                key=f"voice_edit_box_{q_idx}"
+                key=f"voice_edit_box_{q_idx}",
+                label_visibility="collapsed"
             )
 
         # TEXT INPUT PATH
