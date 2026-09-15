@@ -66,18 +66,49 @@ def get_gemini_api_key() -> Optional[str]:
 # -----------------------------------------------------------------------------
 # Gemini LLM Helper Functions (Free Tier)
 # -----------------------------------------------------------------------------
-def get_configured_gemini_model(api_key: str):
+# Ordered list of candidate models for resilience against model lifecycle deprecations.
+# (Google has retired 1.5/2.0/2.5-flash; active models include 3.6-flash, flash-latest, 3.8-flash).
+ACTIVE_GEMINI_MODELS = [
+    "gemini-3.6-flash",
+    "gemini-flash-latest",
+    "gemini-3.8-flash",
+    "gemini-2.5-flash",
+]
+
+
+def generate_with_gemini(api_key: str, prompt: str) -> str:
     """
-    Configures the Google Generative AI client with the user's free-tier key.
-    Uses 'gemini-1.5-flash' for fast, rate-limit friendly responses.
+    Executes a content generation request using the current active Gemini Flash model.
+    Tries candidate models in order to guarantee seamless operation across API updates.
     """
     genai.configure(api_key=api_key)
-    # Use flash model for low latency and high rate-limit tolerance on free tier
-    return genai.GenerativeModel("gemini-1.5-flash")
+    last_error = None
+
+    for model_name in ACTIVE_GEMINI_MODELS:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            if response and response.text:
+                return response.text.strip()
+        except Exception as e:
+            last_error = e
+            continue
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("Could not obtain a response from Gemini API.")
+
+
+def get_configured_gemini_model(api_key: str):
+    """
+    Configures and returns an active Gemini GenerativeModel instance.
+    """
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel("gemini-3.6-flash")
 
 
 def generate_interview_questions(
-    gemini_model,
+    api_key: str,
     resume_summary: str,
     jd_summary: str,
     matching_skills: List[Dict[str, Any]],
@@ -135,8 +166,7 @@ IMPORTANT: Return your response strictly as a valid JSON array of 5 objects with
 Do NOT include any markdown formatting, backticks, or extra commentary outside the JSON array.
 """
 
-    response = gemini_model.generate_content(prompt)
-    raw_text = response.text.strip()
+    raw_text = generate_with_gemini(api_key, prompt)
 
     # Clean markdown code blocks if the model returned ```json ... ```
     cleaned_json = re.sub(r"^```json\s*", "", raw_text, flags=re.IGNORECASE)
@@ -170,7 +200,7 @@ Do NOT include any markdown formatting, backticks, or extra commentary outside t
 
 
 def evaluate_answer(
-    gemini_model,
+    api_key: str,
     question: str,
     answer: str,
     category: str,
@@ -200,8 +230,7 @@ Return strictly a JSON object with:
 Do not add extra markdown or conversational text outside the JSON object.
 """
     try:
-        response = gemini_model.generate_content(prompt)
-        raw_text = response.text.strip()
+        raw_text = generate_with_gemini(api_key, prompt)
         cleaned_json = re.sub(r"^```json\s*", "", raw_text, flags=re.IGNORECASE)
         cleaned_json = re.sub(r"^```\s*", "", cleaned_json)
         cleaned_json = re.sub(r"```$", "", cleaned_json).strip()
@@ -387,9 +416,8 @@ with tab_interview:
                     st.session_state.skill_gaps = rag_results["skill_gaps"]
 
                     # 4. Generate 5 questions in ONE batched Gemini call
-                    model = get_configured_gemini_model(api_key)
                     questions = generate_interview_questions(
-                        model,
+                        api_key,
                         resume_text,
                         jd_text,
                         st.session_state.matching_skills,
@@ -502,9 +530,8 @@ with tab_interview:
                 st.error("Please speak or type an answer before submitting.")
             else:
                 with st.spinner("Evaluating your response with Gemini..."):
-                    model = get_configured_gemini_model(api_key)
                     eval_result = evaluate_answer(
-                        model,
+                        api_key,
                         question=current_q.get("question"),
                         answer=final_answer_text,
                         category=current_q.get("category", "General"),
