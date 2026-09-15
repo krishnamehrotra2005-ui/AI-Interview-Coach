@@ -517,7 +517,7 @@ with tab_interview:
         # VOICE INPUT PATH
         if input_mode == "🎤 Speak your answer":
             st.markdown("#### 🎙️ Voice Answer Input")
-            st.info("👇 **Click the red microphone circle below to record. Speak your answer, then click the stop button.** Your speech will be automatically transcribed.")
+            st.info("👇 **Click the microphone icon below to record. Speak your answer, then click stop.** Your speech will be automatically transcribed.")
 
             # Browser audio recorder with native Start / Stop / Live Timer / Waveform
             recorded_audio = st.audio_input(
