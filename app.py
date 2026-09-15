@@ -493,8 +493,8 @@ with tab_interview:
             if os.path.exists(audio_filepath):
                 with open(audio_filepath, "rb") as f:
                     q_audio_bytes = f.read()
-                # Embed audio bytes directly with autoplay enabled
-                st.audio(q_audio_bytes, format="audio/mp3", autoplay=True)
+                # Embed audio player for in-browser playback/review without simultaneous auto-play
+                st.audio(q_audio_bytes, format="audio/mp3", autoplay=False)
             else:
                 st.caption("🔊 Audio generating...")
 
