@@ -322,6 +322,7 @@ Do not add extra markdown or conversational text outside the JSON object.
 # -----------------------------------------------------------------------------
 def init_session_state():
     """Initializes Streamlit session state keys for the interview flow."""
+    tts_stt.cleanup_audio_cache()
     if "stage" not in st.session_state:
         st.session_state.stage = "setup"  # "setup" -> "interview" -> "completed"
     if "questions" not in st.session_state:
@@ -384,6 +385,7 @@ with tab_interview:
     with col_reset:
         if st.session_state.stage != "setup":
             if st.button("Reset Interview", use_container_width=True):
+                tts_stt.cleanup_audio_cache()
                 st.session_state.stage = "setup"
                 st.session_state.questions = []
                 st.session_state.current_q_idx = 0
@@ -570,49 +572,19 @@ with tab_interview:
         st.markdown(f"### Question {q_idx + 1}: *{current_q.get('category', 'Technical')}*")
         st.info(f"**\"{current_q.get('question')}\"**")
 
-        # Ensure question audio filename is unique to this question, interview session, and speed setting
+        # Question audio synthesis: 100% in-memory streaming (zero disk files, zero browser download element)
         speed_factor = float(st.session_state.get("speech_speed", 1.28))
-        audio_filename = f"q_{q_idx + 1}_{st.session_state.session_id}_{int(speed_factor * 100)}.wav"
-        audio_filepath = os.path.abspath(os.path.join(tts_stt.AUDIO_CACHE_DIR, audio_filename))
 
-        # Synthesize question speech if not yet created for this question in this session
-        if not os.path.exists(audio_filepath):
-            success, saved_file = tts_stt.speak_text(
-                current_q.get("question"),
-                filename=audio_filename,
-                speed=speed_factor
-            )
-            if success:
-                st.session_state.current_audio_path = saved_file
+        # Play question audio automatically once through speakers upon arrival
+        if st.session_state.last_played_q != q_idx:
             st.session_state.last_played_q = q_idx
-        elif st.session_state.last_played_q != q_idx:
-            st.session_state.current_audio_path = audio_filepath
-            st.session_state.last_played_q = q_idx
-            tts_stt.speak_text(
-                current_q.get("question"),
-                filename=audio_filename,
-                speed=speed_factor
-            )
+            tts_stt.speak_text(current_q.get("question"), speed=speed_factor)
 
-        # In-browser audio player with autoplay + Replay button
-        col_audio_player, col_replay = st.columns([3, 1])
-        with col_audio_player:
-            if os.path.exists(audio_filepath):
-                with open(audio_filepath, "rb") as f:
-                    q_audio_bytes = f.read()
-                # Embed audio player for in-browser playback/review without simultaneous auto-play
-                st.audio(q_audio_bytes, format="audio/wav", autoplay=False)
-            else:
-                st.caption("Audio generating...")
-
+        # Clean replay button without exposing downloadable media files
+        col_replay, _ = st.columns([1, 4])
         with col_replay:
             if st.button("Replay Audio", key=f"replay_btn_{q_idx}"):
-                tts_stt.speak_text(
-                    current_q.get("question"),
-                    filename=audio_filename,
-                    speed=speed_factor
-                )
-                st.rerun()
+                tts_stt.speak_text(current_q.get("question"), speed=speed_factor)
 
         st.markdown("---")
 

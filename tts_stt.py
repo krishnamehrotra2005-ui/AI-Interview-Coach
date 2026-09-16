@@ -231,38 +231,46 @@ def time_stretch_audio(signal: np.ndarray, speed: float = 1.28, sample_rate: int
     return np.clip(output[:last_valid + 1], -32768, 32767).astype(np.int16)
 
 
-def speak_text(text: str, filename: str = "question.wav", speed: float = 1.28) -> Tuple[bool, str]:
+def cleanup_audio_cache() -> None:
+    """
+    Purges any leftover temporary audio files in the audio directory.
+    Ensures zero disk accumulation.
+    """
+    if os.path.exists(AUDIO_CACHE_DIR):
+        for f in os.listdir(AUDIO_CACHE_DIR):
+            file_path = os.path.join(AUDIO_CACHE_DIR, f)
+            if os.path.isfile(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+
+
+def speak_text(text: str, filename: Optional[str] = None, speed: float = 1.28) -> Tuple[bool, str]:
     """
     Converts text to speech using gTTS, time-stretches the audio to natural conversational
     interview pace (~170-185 WPM) without altering pitch, and plays it locally via pygame.mixer.
-    Also provides audio file paths for Streamlit in-browser playback.
+
+    By default, operates completely in-memory (zero disk files created and zero memory leaks).
+    If an explicit filename is provided (e.g. for unit testing), saves to that path.
 
     Args:
         text: The interview question text to speak aloud.
-        filename: Destination audio filename (.wav or .mp3). Defaults to 'question.wav'.
+        filename: Optional destination audio filename (.wav or .mp3). Defaults to None (in-memory).
         speed: Speech pacing multiplier (default: 1.28x for natural conversational human pacing).
 
     Returns:
         (success: bool, audio_filepath: str)
     """
-    ensure_audio_dir()
-
-    # Normalize destination paths
-    if not (filename.endswith(".wav") or filename.endswith(".mp3")):
-        filename = filename + ".wav"
-    filepath = os.path.abspath(os.path.join(AUDIO_CACHE_DIR, filename))
-    base_no_ext, ext = os.path.splitext(filepath)
-    wav_filepath = base_no_ext + ".wav"
-
     # Preprocess text so acronyms like EDA are pronounced cleanly as E-D-A
     spoken_text = preprocess_text_for_speech(text)
 
     try:
-        # Step 1: Synthesize base speech using gTTS into a temporary file
-        temp_id = f"{os.getpid()}_{int(time.time() * 1000)}"
-        temp_mp3 = os.path.join(AUDIO_CACHE_DIR, f"_raw_temp_{temp_id}.mp3")
+        # Step 1: Synthesize base speech using gTTS into an in-memory buffer (zero disk writes)
+        mp3_buf = io.BytesIO()
         tts = gTTS(text=spoken_text, lang="en", tld="co.uk", slow=False)
-        tts.save(temp_mp3)
+        tts.write_to_fp(mp3_buf)
+        mp3_buf.seek(0)
 
         # Step 2: Ensure pygame mixer is initialized
         if not pygame.mixer.get_init():
@@ -270,8 +278,8 @@ def speak_text(text: str, filename: str = "question.wav", speed: float = 1.28) -
             pygame.mixer.init()
 
         # Step 3: Load raw audio into numpy array for speed adjustment
-        sound = pygame.mixer.Sound(temp_mp3)
-        raw_arr = pygame.sndarray.array(sound)
+        raw_sound = pygame.mixer.Sound(mp3_buf)
+        raw_arr = pygame.sndarray.array(raw_sound)
 
         # Step 4: Apply time-stretching if speed != 1.0 (defaults to 1.28x for conversational speed)
         if abs(speed - 1.0) > 0.02 and len(raw_arr) > 0:
@@ -279,44 +287,42 @@ def speak_text(text: str, filename: str = "question.wav", speed: float = 1.28) -
         else:
             sped_arr = raw_arr
 
-        # Step 5: Save high-quality WAV file
-        wavfile.write(wav_filepath, 44100, sped_arr)
-
-        # Clean up temporary mp3
+        # Step 5: Play audio locally through host speakers via pygame.mixer Sound
         try:
-            if os.path.exists(temp_mp3):
-                os.remove(temp_mp3)
-        except Exception:
-            pass
-
-        # Step 6: If an MP3 was explicitly requested, create MP3 copy via ffmpeg if available
-        final_filepath = wav_filepath
-        if ext.lower() == ".mp3":
-            ffmpeg_exe = shutil.which("ffmpeg")
-            if ffmpeg_exe:
-                try:
-                    subprocess.run(
-                        [ffmpeg_exe, "-y", "-i", wav_filepath, "-b:a", "192k", filepath],
-                        check=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL
-                    )
-                    final_filepath = filepath
-                except Exception:
-                    final_filepath = wav_filepath
-            else:
-                final_filepath = wav_filepath
-
-        # Step 7: Play audio locally through host speakers via pygame.mixer.music
-        try:
-            pygame.mixer.music.set_volume(1.0)
-            if pygame.mixer.music.get_busy():
-                pygame.mixer.music.stop()
-            pygame.mixer.music.unload()
-            pygame.mixer.music.load(final_filepath)
-            pygame.mixer.music.play()
+            pygame.mixer.stop()
+            sound = pygame.sndarray.make_sound(sped_arr)
+            sound.set_volume(1.0)
+            sound.play()
         except Exception as audio_device_err:
             print(f"[Notice] Pygame audio playback skipped (headless or no soundcard): {audio_device_err}")
+
+        # Step 6: If an explicit filename was requested (e.g. automated test), write it out
+        final_filepath = ""
+        if filename:
+            ensure_audio_dir()
+            base_name = os.path.basename(filename)
+            filepath = os.path.abspath(os.path.join(AUDIO_CACHE_DIR, base_name))
+            base_no_ext, ext = os.path.splitext(filepath)
+            wav_filepath = base_no_ext + ".wav"
+
+            wavfile.write(wav_filepath, 44100, sped_arr)
+            final_filepath = wav_filepath
+
+            if ext.lower() == ".mp3":
+                ffmpeg_exe = shutil.which("ffmpeg")
+                if ffmpeg_exe:
+                    try:
+                        subprocess.run(
+                            [ffmpeg_exe, "-y", "-i", wav_filepath, "-b:a", "192k", filepath],
+                            check=True,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL
+                        )
+                        final_filepath = filepath
+                    except Exception:
+                        final_filepath = wav_filepath
+                else:
+                    final_filepath = wav_filepath
 
         return True, final_filepath
 
