@@ -17,7 +17,7 @@ import time
 import uuid
 import json
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
