@@ -161,11 +161,12 @@ def generate_interview_questions(
     resume_summary: str,
     jd_summary: str,
     matching_skills: List[Dict[str, Any]],
-    skill_gaps: List[Dict[str, Any]]
+    skill_gaps: List[Dict[str, Any]],
+    num_questions: int = 20
 ) -> Dict[str, Any]:
     """
-    Generates non-technical human-readable skill match synthesis AND 5 tailored
-    interview questions in ONE single batched Gemini call to preserve free-tier limits.
+    Generates non-technical human-readable skill match synthesis AND tailored
+    interview questions (up to 20-25) in ONE single batched Gemini call to preserve free-tier limits.
     """
     # Format retrieved RAG context for prompt injection
     matches_text = "\n".join([
@@ -184,7 +185,7 @@ Identify:
 1. Candidate's matching skills (strengths where resume clearly aligns with the job).
 2. Candidate's skill gaps (job requirements where resume has the least visible experience).
 Write ALL explanations in simple, everyday language so that anyone from a non-technical background can understand their strengths, their gaps, and how to prepare.
-Then generate 5 tailored interview questions.
+Then generate exactly {num_questions} tailored, realistic interview questions.
 
 === RETRIEVED RAG CONTEXT ===
 Strongest Matches from Job Description:
@@ -211,21 +212,57 @@ Return strictly a valid JSON object with keys:
    - "match_score": Integer percentage between 25 and 55 (e.g. 35)
    - "job_requirement": 1 simple sentence explaining what the employer is looking for.
    - "advice": 1 practical sentence explaining why the interviewer may ask about this and how the candidate can address it (e.g. highlighting adaptability and quick learning).
-3. "questions": A list of 5 objects:
-   - "id": integer (1 to 5)
-   - "category": string ("Matching Skill", "Technical Deep-Dive", "Skill Gap", "Adaptability", "Behavioral")
-   - "question": string (the exact wording of the question)
+3. "questions": A list of exactly {num_questions} objects, balanced across these 5 categories:
+   - "Matching Skill" (questions focusing on real projects and experience cited on their resume)
+   - "Technical Deep-Dive" (questions probing architectural decisions, trade-offs, edge cases, and debugging)
+   - "Skill Gap" (questions exploring unfamiliar JD technologies, rapid learning, and conceptual fundamentals)
+   - "Adaptability" (scenario questions on shifting requirements, tight timelines, and production challenges)
+   - "Behavioral" (situational questions on collaboration, communication, and ownership using STAR format)
+
+Each question object MUST have:
+   - "id": integer (1 to {num_questions})
+   - "category": string (one of the 5 categories above)
+   - "question": string (the exact conversational question spoken by the interviewer)
 
 Do NOT include any markdown formatting, backticks, or extra text outside the JSON object.
 """
 
     fallback_matches, fallback_gaps = create_fallback_skills_and_gaps(matching_skills, skill_gaps)
     default_questions = [
+        # Matching Skills (1-5)
         {"id": 1, "category": "Matching Skill", "question": "Can you walk me through one of the primary technical projects mentioned in your resume that aligns with this role?"},
-        {"id": 2, "category": "Technical Deep-Dive", "question": "What was the most challenging technical roadblock you encountered in your recent work, and how did you resolve it?"},
-        {"id": 3, "category": "Skill Gap", "question": "This role requires familiarity with key technologies from the job description. What is your experience with them, and how do you approach learning new tools?"},
-        {"id": 4, "category": "Adaptability", "question": "Tell me about a time when you had to adapt to an unfamiliar framework or codebase under a tight deadline."},
-        {"id": 5, "category": "Behavioral", "question": "Describe a situation where you had a technical disagreement with a teammate. How did you handle it to reach a resolution?"}
+        {"id": 2, "category": "Matching Skill", "question": "In your past experience, how did you choose the specific tools, libraries, or architecture for your core projects?"},
+        {"id": 3, "category": "Matching Skill", "question": "Can you share a specific instance where your technical contribution directly improved performance, reliability, or business outcomes?"},
+        {"id": 4, "category": "Matching Skill", "question": "How do you ensure maintainability, code quality, and testing standards across the software you develop?"},
+        {"id": 5, "category": "Matching Skill", "question": "Tell me about a complex feature you implemented from scratch based on ambiguous requirements."},
+
+        # Technical Deep-Dive (6-10)
+        {"id": 6, "category": "Technical Deep-Dive", "question": "What was the most challenging technical roadblock or bug you encountered in your recent work, and how did you diagnose and resolve it?"},
+        {"id": 7, "category": "Technical Deep-Dive", "question": "When designing a scalable solution, how do you handle bottlenecks in data processing, memory management, or network latency?"},
+        {"id": 8, "category": "Technical Deep-Dive", "question": "Can you explain the trade-offs between two different technical approaches you considered for a major task?"},
+        {"id": 9, "category": "Technical Deep-Dive", "question": "How do you approach database schema design, indexing, and query optimization for high-throughput systems?"},
+        {"id": 10, "category": "Technical Deep-Dive", "question": "Describe how you monitor, log, and troubleshoot application failures when running in a production environment."},
+
+        # Skill Gap & Rapid Learning (11-15)
+        {"id": 11, "category": "Skill Gap", "question": "This role requires familiarity with key technologies from the job description. What is your experience with them, and how do you approach learning new tools?"},
+        {"id": 12, "category": "Skill Gap", "question": "If you needed to quickly build production-ready software with a technology stack you have not used before, what would be your step-by-step learning strategy?"},
+        {"id": 13, "category": "Skill Gap", "question": "How do you evaluate whether a newly introduced tool or framework is worth adopting for an engineering team?"},
+        {"id": 14, "category": "Skill Gap", "question": "Tell me about a time you had to deliver results using an unfamiliar framework under a tight deadline."},
+        {"id": 15, "category": "Skill Gap", "question": "What core computer science fundamentals help you bridge gaps when transitioning between different programming languages or tools?"},
+
+        # Adaptability & Scenario (16-20)
+        {"id": 16, "category": "Adaptability", "question": "Tell me about a situation where project priorities or stakeholder requirements changed abruptly midway through development. How did you adapt?"},
+        {"id": 17, "category": "Adaptability", "question": "How do you balance delivering clean, well-tested code against pressing deadlines and business pressure?"},
+        {"id": 18, "category": "Adaptability", "question": "Describe a production incident or unexpected outage you handled. What was your immediate reaction and post-incident process?"},
+        {"id": 19, "category": "Adaptability", "question": "When you inherit legacy code that lacks documentation and test coverage, how do you approach refactoring and maintaining it?"},
+        {"id": 20, "category": "Adaptability", "question": "How do you prioritize multiple competing technical tasks when every stakeholder claims their ticket is top priority?"},
+
+        # Behavioral & Leadership (21-25)
+        {"id": 21, "category": "Behavioral", "question": "Describe a situation where you had a technical disagreement with a teammate. How did you handle it to reach a resolution?"},
+        {"id": 22, "category": "Behavioral", "question": "Can you give an example of how you explained a complex technical concept to a non-technical stakeholder or client?"},
+        {"id": 23, "category": "Behavioral", "question": "Tell me about a time you received critical feedback on your work. How did you process it and what changes did you make?"},
+        {"id": 24, "category": "Behavioral", "question": "Describe an instance where you helped mentor or unblock a colleague on a difficult problem."},
+        {"id": 25, "category": "Behavioral", "question": "What kind of team culture and work environment brings out your best performance as an engineer?"}
     ]
 
     try:
@@ -244,18 +281,28 @@ Do NOT include any markdown formatting, backticks, or extra text outside the JSO
             m_skills = data.get("matching_skills", [])
             s_gaps = data.get("skill_gaps", [])
 
+            # Ensure we return exactly num_questions by supplementing with defaults if LLM returned fewer
+            if isinstance(qs, list) and len(qs) >= 5:
+                if len(qs) < num_questions:
+                    qs = (qs + default_questions[len(qs):])[:num_questions]
+                else:
+                    qs = qs[:num_questions]
+            else:
+                qs = default_questions[:num_questions]
+
             return {
                 "matching_skills": m_skills if m_skills else fallback_matches,
                 "skill_gaps": s_gaps if s_gaps else fallback_gaps,
-                "questions": qs if len(qs) == 5 else default_questions
+                "questions": qs
             }
 
         # If data is a list of questions directly (legacy format)
-        if isinstance(data, list) and len(data) == 5:
+        if isinstance(data, list) and len(data) >= 5:
+            qs = (data + default_questions[len(data):])[:num_questions]
             return {
                 "matching_skills": fallback_matches,
                 "skill_gaps": fallback_gaps,
-                "questions": data
+                "questions": qs
             }
 
     except Exception as e:
@@ -265,7 +312,7 @@ Do NOT include any markdown formatting, backticks, or extra text outside the JSO
     return {
         "matching_skills": fallback_matches,
         "skill_gaps": fallback_gaps,
-        "questions": default_questions
+        "questions": default_questions[:num_questions]
     }
 
 
@@ -351,6 +398,8 @@ def init_session_state():
         st.session_state.session_id = str(int(time.time()))
     if "speech_speed" not in st.session_state:
         st.session_state.speech_speed = 1.28
+    if "target_num_questions" not in st.session_state:
+        st.session_state.target_num_questions = 20
 
 
 init_session_state()
@@ -441,16 +490,26 @@ with tab_interview:
             else:
                 jd_file = st.file_uploader("Upload Job Description (PDF)", type=["pdf"])
 
-        with st.expander("Voice Settings (Optional)", expanded=False):
-            speech_speed = st.slider(
-                "Interviewer Speech Pace",
-                min_value=1.10,
-                max_value=1.50,
-                value=float(st.session_state.get("speech_speed", 1.28)),
-                step=0.05,
-                help="Controls how fast the AI interviewer speaks. 1.28x matches natural human interview conversation (~180 words/minute)."
-            )
-            st.session_state.speech_speed = speech_speed
+        with st.expander("Interview & Voice Settings (Optional)", expanded=True):
+            col_opt1, col_opt2 = st.columns([1, 1])
+            with col_opt1:
+                num_questions_selected = st.select_slider(
+                    "Number of Interview Questions",
+                    options=[5, 10, 15, 20, 25],
+                    value=int(st.session_state.get("target_num_questions", 20)),
+                    help="Choose how many tailored questions you want to practice. Defaults to 20 comprehensive questions."
+                )
+                st.session_state.target_num_questions = num_questions_selected
+            with col_opt2:
+                speech_speed = st.slider(
+                    "Interviewer Speech Pace",
+                    min_value=1.10,
+                    max_value=1.50,
+                    value=float(st.session_state.get("speech_speed", 1.28)),
+                    step=0.05,
+                    help="Controls how fast the AI interviewer speaks. 1.28x matches natural human interview conversation (~180 words/minute)."
+                )
+                st.session_state.speech_speed = speech_speed
 
         st.markdown("---")
         start_btn = st.button("Analyze Documents and Generate Questions", type="primary", use_container_width=True)
@@ -493,13 +552,14 @@ with tab_interview:
                     # 3. Perform Basic RAG similarity analysis
                     rag_results = rag.analyze_matches_and_gaps(resume_chunks, jd_chunks, top_k=3)
 
-                    # 4. Synthesize non-technical skill analysis AND 5 questions in ONE batched Gemini call
+                    # 4. Synthesize non-technical skill analysis AND tailored questions in ONE batched Gemini call
                     analysis_result = generate_interview_questions(
                         api_key,
                         resume_text,
                         jd_text,
                         rag_results["matching_skills"],
-                        rag_results["skill_gaps"]
+                        rag_results["skill_gaps"],
+                        num_questions=int(st.session_state.get("target_num_questions", 20))
                     )
 
                     st.session_state.matching_skills = analysis_result.get("matching_skills", [])
@@ -700,14 +760,20 @@ with tab_interview:
             st.markdown("---")
             # Next Question or Finish Button
             if q_idx < len(questions) - 1:
-                if st.button("Next Question", type="primary"):
-                    st.session_state.current_q_idx += 1
-                    st.session_state.current_eval = None
-                    st.session_state.voice_transcription = ""
-                    st.session_state.answer_submitted = False
-                    st.rerun()
+                col_next, col_finish_early = st.columns([2, 2])
+                with col_next:
+                    if st.button("Next Question", type="primary", use_container_width=True):
+                        st.session_state.current_q_idx += 1
+                        st.session_state.current_eval = None
+                        st.session_state.voice_transcription = ""
+                        st.session_state.answer_submitted = False
+                        st.rerun()
+                with col_finish_early:
+                    if st.button("Finish Interview Early and View Summary", use_container_width=True):
+                        st.session_state.stage = "completed"
+                        st.rerun()
             else:
-                if st.button("Finish Interview and View Summary", type="primary"):
+                if st.button("Finish Interview and View Summary", type="primary", use_container_width=True):
                     st.session_state.stage = "completed"
                     st.rerun()
 
@@ -716,7 +782,8 @@ with tab_interview:
     # -------------------------------------------------------------------------
     elif st.session_state.stage == "completed":
         st.balloons()
-        st.success("Congratulations! You have completed the 5-question mock interview.")
+        total_session_qs = len(st.session_state.questions)
+        st.success(f"Congratulations! You have completed your mock interview session ({total_session_qs} questions).")
         st.markdown("All your questions, answers, and scores have been logged to your local SQLite database.")
 
         st.subheader("What's Next?")
