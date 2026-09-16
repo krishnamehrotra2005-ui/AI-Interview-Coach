@@ -20,6 +20,7 @@ import time
 import wave
 import shutil
 import subprocess
+import base64
 from typing import Tuple, Optional
 from gtts import gTTS
 import pygame
@@ -338,6 +339,39 @@ def speak_text(text: str, filename: Optional[str] = None, speed: float = 1.28) -
     except Exception as e:
         print(f"[Error] TTS generation failed: {e}")
         return False, ""
+
+
+def get_audio_base64(text: str, speed: float = 1.28) -> str:
+    """
+    Synthesizes speech in-memory and returns a base64-encoded WAV string
+    for clean in-browser streaming (zero disk files, no download required).
+    """
+    spoken_text = preprocess_text_for_speech(text)
+    try:
+        mp3_buf = io.BytesIO()
+        tts = gTTS(text=spoken_text, lang="en", tld="co.uk", slow=False)
+        tts.write_to_fp(mp3_buf)
+        mp3_buf.seek(0)
+
+        if not pygame.mixer.get_init():
+            pygame.mixer.pre_init(44100, -16, 2, 2048)
+            pygame.mixer.init()
+
+        raw_sound = pygame.mixer.Sound(mp3_buf)
+        raw_arr = pygame.sndarray.array(raw_sound)
+
+        if abs(speed - 1.0) > 0.02 and len(raw_arr) > 0:
+            sped_arr = time_stretch_audio(raw_arr, speed=speed, sample_rate=44100)
+        else:
+            sped_arr = raw_arr
+
+        wav_buf = io.BytesIO()
+        wavfile.write(wav_buf, 44100, sped_arr)
+        wav_buf.seek(0)
+        return base64.b64encode(wav_buf.getvalue()).decode()
+    except Exception as e:
+        print(f"[Notice] Failed to generate in-memory base64 audio: {e}")
+        return ""
 
 
 def get_best_microphone_index() -> Optional[int]:
