@@ -55,19 +55,17 @@ def extract_text_from_pdf(file_source: Union[str, io.BytesIO, bytes]) -> str:
 
 def chunk_text(text: str, chunk_size: int = 400, overlap: int = 50) -> List[str]:
     """
-    Splits text into chunks of approximately `chunk_size` characters with `overlap`.
-    
-    Why chunking is needed for RAG:
-    Embedding models have token limits and perform best when comparing focused,
-    specific paragraphs rather than an entire multi-page document at once.
+    Splits text into coherent chunks of approximately `chunk_size` characters,
+    strictly respecting sentence and word boundaries so text is never truncated
+    mid-word (e.g. avoiding fragments like 'ical/logical' or 'em Engineering').
     
     Args:
-        text: The normalized document text to split.
+        text: The document text to split.
         chunk_size: Target character length per chunk.
-        overlap: Overlap in characters between adjacent chunks to prevent cutting off context.
+        overlap: Desired contextual overlap in characters.
 
     Returns:
-        List of non-empty text chunk strings.
+        List of clean, grammatically coherent text chunks.
     """
     cleaned = clean_text(text)
     if not cleaned:
@@ -76,27 +74,60 @@ def chunk_text(text: str, chunk_size: int = 400, overlap: int = 50) -> List[str]
     if len(cleaned) <= chunk_size:
         return [cleaned]
 
+    # Split into logical sentence/bullet units first
+    raw_segments = re.split(r'(?<=[.!?•;\n])\s+', cleaned)
+    segments = [s.strip() for s in raw_segments if s.strip()]
+    if not segments:
+        segments = [cleaned]
+
     chunks = []
-    start = 0
-    text_length = len(cleaned)
+    current_chunk = []
+    current_len = 0
 
-    while start < text_length:
-        end = start + chunk_size
-        chunk = cleaned[start:end]
+    for seg in segments:
+        seg_len = len(seg)
 
-        # Try to break at a natural sentence or word boundary if not at the end of the text
-        if end < text_length:
-            last_space = chunk.rfind(" ")
-            if last_space > chunk_size // 2:
-                chunk = chunk[:last_space]
-                start += last_space - overlap
+        # If an individual segment exceeds chunk_size, split it on whole word boundaries
+        if seg_len > chunk_size:
+            words = seg.split()
+            sub_chunk = []
+            sub_len = 0
+            for w in words:
+                if sub_len + len(w) + 1 > chunk_size and sub_chunk:
+                    chunk_str = " ".join(sub_chunk).strip()
+                    if chunk_str and chunk_str not in chunks:
+                        chunks.append(chunk_str)
+                    # Retain last few whole words for overlap
+                    overlap_words = max(1, overlap // 10)
+                    sub_chunk = sub_chunk[-overlap_words:]
+                    sub_len = sum(len(x) + 1 for x in sub_chunk)
+                sub_chunk.append(w)
+                sub_len += len(w) + 1
+            if sub_chunk:
+                chunk_str = " ".join(sub_chunk).strip()
+                if chunk_str and chunk_str not in chunks:
+                    chunks.append(chunk_str)
+            continue
+
+        # Add segment to current chunk or flush if full
+        if current_len + seg_len + 1 > chunk_size and current_chunk:
+            chunk_str = " ".join(current_chunk).strip()
+            if chunk_str and chunk_str not in chunks:
+                chunks.append(chunk_str)
+            # Retain the last segment for overlap if suitable
+            if overlap > 0 and len(current_chunk[-1]) <= overlap:
+                current_chunk = [current_chunk[-1], seg]
+                current_len = len(current_chunk[0]) + seg_len + 1
             else:
-                start += chunk_size - overlap
+                current_chunk = [seg]
+                current_len = seg_len
         else:
-            start += chunk_size
+            current_chunk.append(seg)
+            current_len += seg_len + 1
 
-        chunk = chunk.strip()
-        if chunk and chunk not in chunks:
-            chunks.append(chunk)
+    if current_chunk:
+        chunk_str = " ".join(current_chunk).strip()
+        if chunk_str and chunk_str not in chunks:
+            chunks.append(chunk_str)
 
-    return chunks
+    return chunks if chunks else [cleaned]

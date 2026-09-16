@@ -115,96 +115,158 @@ def get_configured_gemini_model(api_key: str):
     return genai.GenerativeModel("gemini-3.6-flash")
 
 
+def create_fallback_skills_and_gaps(
+    raw_matches: List[Dict[str, Any]],
+    raw_gaps: List[Dict[str, Any]]
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Transforms raw RAG chunks into clean, non-technical human-readable cards
+    if LLM synthesis format is unavailable.
+    """
+    clean_matches = []
+    for idx, m in enumerate(raw_matches[:3]):
+        jd_text = m.get("jd_chunk", "").strip()
+        sim = float(m.get("similarity_score", 0.5))
+        # Convert cosine similarity (typically 0.35-0.70) into intuitive 70-95%
+        pct = int(min(max((sim - 0.2) / 0.5 * 35 + 60, 68), 96))
+        words = jd_text.split()
+        short_title = " ".join(words[:5]).rstrip(".,;:") if words else f"Core Competency {idx + 1}"
+        clean_matches.append({
+            "skill": short_title,
+            "match_score": pct,
+            "job_requirement": jd_text,
+            "candidate_evidence": m.get("best_resume_match", "Your resume experience aligns with this requirement.")
+        })
+
+    clean_gaps = []
+    for idx, g in enumerate(raw_gaps[:3]):
+        jd_text = g.get("jd_chunk", "").strip()
+        sim = float(g.get("similarity_score", 0.3))
+        # Convert cosine similarity into intuitive 25-50%
+        pct = int(min(max((sim - 0.1) / 0.4 * 30 + 20, 22), 52))
+        words = jd_text.split()
+        short_title = " ".join(words[:5]).rstrip(".,;:") if words else f"Growth Area {idx + 1}"
+        clean_gaps.append({
+            "skill": short_title,
+            "match_score": pct,
+            "job_requirement": jd_text,
+            "advice": "This requirement is less visible on your resume. Expect questions testing your ability to learn and adapt."
+        })
+
+    return clean_matches, clean_gaps
+
+
 def generate_interview_questions(
     api_key: str,
     resume_summary: str,
     jd_summary: str,
     matching_skills: List[Dict[str, Any]],
     skill_gaps: List[Dict[str, Any]]
-) -> List[Dict[str, Any]]:
+) -> Dict[str, Any]:
     """
-    Generates exactly 5 interview questions in ONE batched LLM call to respect
-    the free-tier rate limits.
-    
-    The 5 questions consist of:
-    - 2 questions on matching skills / resume projects
-    - 2 questions on skill gaps / JD requirements
-    - 1 behavioral / situational question
+    Generates non-technical human-readable skill match synthesis AND 5 tailored
+    interview questions in ONE single batched Gemini call to preserve free-tier limits.
     """
     # Format retrieved RAG context for prompt injection
     matches_text = "\n".join([
-        f"- JD Need: {m['jd_chunk']} (Candidate match score: {m['similarity_score']})"
+        f"- JD Need: {m.get('jd_chunk', '')} (Match similarity: {m.get('similarity_score', 0.5)})"
         for m in matching_skills
     ]) if matching_skills else "General software and domain competencies."
 
     gaps_text = "\n".join([
-        f"- JD Need: {g['jd_chunk']} (Weakest match score: {g['similarity_score']})"
+        f"- JD Need: {g.get('jd_chunk', '')} (Match similarity: {g.get('similarity_score', 0.3)})"
         for g in skill_gaps
     ]) if skill_gaps else "Specific advanced domain requirements."
 
-    prompt = f"""You are an expert technical interviewer conducting a mock job interview.
-Based on the candidate's resume and the job description, generate EXACTLY 5 tailored interview questions.
+    prompt = f"""You are an expert career coach and hiring manager.
+Compare the candidate's resume against the job description.
+Identify:
+1. Candidate's matching skills (strengths where resume clearly aligns with the job).
+2. Candidate's skill gaps (job requirements where resume has the least visible experience).
+Write ALL explanations in simple, everyday language so that anyone from a non-technical background can understand their strengths, their gaps, and how to prepare.
+Then generate 5 tailored interview questions.
 
 === RETRIEVED RAG CONTEXT ===
-Matching Skills (Candidate's strengths):
+Strongest Matches from Job Description:
 {matches_text}
 
-Skill Gaps (Job requirements where candidate has least visible experience):
+Weakest Matches / Gaps from Job Description:
 {gaps_text}
 
 Resume Snippet:
-{resume_summary[:800]}
+{resume_summary[:1000]}
 
 Job Description Snippet:
-{jd_summary[:800]}
+{jd_summary[:1000]}
 
-=== QUESTION GUIDELINES ===
-Create 5 targeted questions:
-1. Question 1 (Resume & Projects): Focus on an area where candidate skills match the JD.
-2. Question 2 (Technical Deep Dive): Ask for specific technical implementation details on a matched skill.
-3. Question 3 (Skill Gap Assessment): Inquire about a JD requirement identified as a gap area in a constructive way.
-4. Question 4 (Adaptability & Learning): Ask how they would bridge or handle another gap area in this role.
-5. Question 5 (Behavioral / Situational): Role-specific behavioral question (collaboration, handling tight deadlines, or problem-solving).
+=== OUTPUT INSTRUCTIONS ===
+Return strictly a valid JSON object with keys:
+1. "matching_skills": A list of 2 to 3 objects:
+   - "skill": Short, clean title of the matched skill (e.g. "Problem Solving & Clarity of Thought", "Python Programming")
+   - "match_score": Integer percentage between 70 and 95 (e.g. 85)
+   - "job_requirement": 1 simple sentence explaining what the employer is looking for.
+   - "candidate_evidence": 1 simple sentence explaining how the candidate's background demonstrates this.
+2. "skill_gaps": A list of 2 to 3 objects:
+   - "skill": Short, clean title of the gap skill (e.g. "Big Data Architecture", "Cross-Functional Collaboration")
+   - "match_score": Integer percentage between 25 and 55 (e.g. 35)
+   - "job_requirement": 1 simple sentence explaining what the employer is looking for.
+   - "advice": 1 practical sentence explaining why the interviewer may ask about this and how the candidate can address it (e.g. highlighting adaptability and quick learning).
+3. "questions": A list of 5 objects:
+   - "id": integer (1 to 5)
+   - "category": string ("Matching Skill", "Technical Deep-Dive", "Skill Gap", "Adaptability", "Behavioral")
+   - "question": string (the exact wording of the question)
 
-IMPORTANT: Return your response strictly as a valid JSON array of 5 objects with keys:
-- "id": integer (1 to 5)
-- "category": string (e.g. "Matching Skill", "Technical Deep-Dive", "Skill Gap", "Adaptability", "Behavioral")
-- "question": string (the exact wording of the question)
-
-Do NOT include any markdown formatting, backticks, or extra commentary outside the JSON array.
+Do NOT include any markdown formatting, backticks, or extra text outside the JSON object.
 """
 
-    raw_text = generate_with_gemini(api_key, prompt)
-
-    # Clean markdown code blocks if the model returned ```json ... ```
-    cleaned_json = re.sub(r"^```json\s*", "", raw_text, flags=re.IGNORECASE)
-    cleaned_json = re.sub(r"^```\s*", "", cleaned_json)
-    cleaned_json = re.sub(r"```$", "", cleaned_json).strip()
-
-    try:
-        questions = json.loads(cleaned_json)
-        if isinstance(questions, list) and len(questions) == 5:
-            return questions
-    except Exception:
-        pass
-
-    # Fallback parsing in case JSON is slightly malformed
-    # Extract JSON array using regex
-    match = re.search(r"\[\s*\{.*\}\s*\]", raw_text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except Exception:
-            pass
-
-    # Default fallback questions if LLM output format failed
-    return [
+    fallback_matches, fallback_gaps = create_fallback_skills_and_gaps(matching_skills, skill_gaps)
+    default_questions = [
         {"id": 1, "category": "Matching Skill", "question": "Can you walk me through one of the primary technical projects mentioned in your resume that aligns with this role?"},
         {"id": 2, "category": "Technical Deep-Dive", "question": "What was the most challenging technical roadblock you encountered in your recent work, and how did you resolve it?"},
         {"id": 3, "category": "Skill Gap", "question": "This role requires familiarity with key technologies from the job description. What is your experience with them, and how do you approach learning new tools?"},
         {"id": 4, "category": "Adaptability", "question": "Tell me about a time when you had to adapt to an unfamiliar framework or codebase under a tight deadline."},
         {"id": 5, "category": "Behavioral", "question": "Describe a situation where you had a technical disagreement with a teammate. How did you handle it to reach a resolution?"}
     ]
+
+    try:
+        raw_text = generate_with_gemini(api_key, prompt)
+
+        # Clean markdown code blocks if the model returned ```json ... ```
+        cleaned_json = re.sub(r"^```json\s*", "", raw_text, flags=re.IGNORECASE)
+        cleaned_json = re.sub(r"^```\s*", "", cleaned_json)
+        cleaned_json = re.sub(r"```$", "", cleaned_json).strip()
+
+        data = json.loads(cleaned_json, strict=False)
+
+        # If data is a dict containing our expected keys
+        if isinstance(data, dict):
+            qs = data.get("questions", [])
+            m_skills = data.get("matching_skills", [])
+            s_gaps = data.get("skill_gaps", [])
+
+            return {
+                "matching_skills": m_skills if m_skills else fallback_matches,
+                "skill_gaps": s_gaps if s_gaps else fallback_gaps,
+                "questions": qs if len(qs) == 5 else default_questions
+            }
+
+        # If data is a list of questions directly (legacy format)
+        if isinstance(data, list) and len(data) == 5:
+            return {
+                "matching_skills": fallback_matches,
+                "skill_gaps": fallback_gaps,
+                "questions": data
+            }
+
+    except Exception as e:
+        print(f"[Notice] LLM question generation fallback used: {e}")
+
+    # Fallback return
+    return {
+        "matching_skills": fallback_matches,
+        "skill_gaps": fallback_gaps,
+        "questions": default_questions
+    }
 
 
 def evaluate_answer(
@@ -428,19 +490,19 @@ with tab_interview:
 
                     # 3. Perform Basic RAG similarity analysis
                     rag_results = rag.analyze_matches_and_gaps(resume_chunks, jd_chunks, top_k=3)
-                    st.session_state.matching_skills = rag_results["matching_skills"]
-                    st.session_state.skill_gaps = rag_results["skill_gaps"]
 
-                    # 4. Generate 5 questions in ONE batched Gemini call
-                    questions = generate_interview_questions(
+                    # 4. Synthesize non-technical skill analysis AND 5 questions in ONE batched Gemini call
+                    analysis_result = generate_interview_questions(
                         api_key,
                         resume_text,
                         jd_text,
-                        st.session_state.matching_skills,
-                        st.session_state.skill_gaps
+                        rag_results["matching_skills"],
+                        rag_results["skill_gaps"]
                     )
 
-                    st.session_state.questions = questions
+                    st.session_state.matching_skills = analysis_result.get("matching_skills", [])
+                    st.session_state.skill_gaps = analysis_result.get("skill_gaps", [])
+                    st.session_state.questions = analysis_result.get("questions", [])
                     st.session_state.current_q_idx = 0
                     st.session_state.last_played_q = -1
                     st.session_state.current_audio_path = None
@@ -457,17 +519,48 @@ with tab_interview:
         q_idx = st.session_state.current_q_idx
         current_q = questions[q_idx]
 
-        # Top RAG Insights Accordion
-        with st.expander("View Matching Skills and Identified Gaps (RAG Analysis)", expanded=False):
+        # Top Skill Analysis Accordion
+        with st.expander("Skill Match Analysis: Your Strengths and Preparation Areas", expanded=False):
+            st.caption(
+                "This breakdown compares your resume with the job requirements in simple, plain English. "
+                "Review your matching strengths to speak about them with confidence, and review your preparation areas "
+                "so you can explain how you learn and adapt during the interview."
+            )
             col_m, col_g = st.columns(2)
             with col_m:
-                st.markdown("##### Matching Skills (Candidate Strengths)")
-                for item in st.session_state.matching_skills:
-                    st.markdown(f"- **Requirement**: {item['jd_chunk'][:120]}... *(Similarity: {item['similarity_score']})*")
+                st.markdown("##### Strongest Matching Skills")
+                if st.session_state.matching_skills:
+                    for item in st.session_state.matching_skills:
+                        skill_name = item.get("skill", "Matching Skill")
+                        match_pct = item.get("match_score", 85)
+                        req = item.get("job_requirement") or item.get("jd_chunk", "")
+                        evidence = item.get("candidate_evidence") or item.get("best_resume_match", "")
+
+                        st.markdown(f"**{skill_name}** - *{match_pct}% Match (High Alignment)*")
+                        st.progress(match_pct / 100)
+                        st.markdown(f"- **Employer Expectation:** {req}")
+                        if evidence:
+                            st.markdown(f"- **Your Background:** {evidence}")
+                        st.markdown("")
+                else:
+                    st.info("General alignment with core role responsibilities.")
+
             with col_g:
-                st.markdown("##### Identified Skill Gaps (Interview Focus)")
-                for item in st.session_state.skill_gaps:
-                    st.markdown(f"- **Requirement**: {item['jd_chunk'][:120]}... *(Similarity: {item['similarity_score']})*")
+                st.markdown("##### Topics to Prepare For (Skill Gaps)")
+                if st.session_state.skill_gaps:
+                    for item in st.session_state.skill_gaps:
+                        skill_name = item.get("skill", "Skill Gap")
+                        match_pct = item.get("match_score", 35)
+                        req = item.get("job_requirement") or item.get("jd_chunk", "")
+                        advice = item.get("advice") or "This requirement is less visible on your resume. Expect questions on how you learn and adapt."
+
+                        st.markdown(f"**{skill_name}** - *Interview Focus Area ({match_pct}% Resume Coverage)*")
+                        st.progress(match_pct / 100)
+                        st.markdown(f"- **Employer Expectation:** {req}")
+                        st.markdown(f"- **How to Answer:** {advice}")
+                        st.markdown("")
+                else:
+                    st.info("No significant gaps identified. Expect standard behavioral and technical deep-dives.")
 
         # Progress bar
         progress_val = (q_idx + 1) / len(questions)
