@@ -30,6 +30,9 @@ from scipy.io import wavfile
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AUDIO_CACHE_DIR = os.path.join(BASE_DIR, "temp_audio")
 
+# Global reference to prevent active sound channel from being prematurely garbage-collected
+_ACTIVE_SOUND: Optional[pygame.mixer.Sound] = None
+
 # Dictionary of technical acronyms that TTS engines mispronounce as single words
 # e.g. EDA -> 'eeda' becomes 'E-D-A' so each letter is pronounced distinctly.
 COMMON_ACRONYMS = {
@@ -147,7 +150,7 @@ def time_stretch_audio(signal: np.ndarray, speed: float = 1.28, sample_rate: int
     """
     Time-scale modification using WSOLA (Waveform Similarity Overlap-Add)
     to accelerate audio playback to natural conversational interview speed (~170-185 WPM)
-    without altering pitch.
+    without altering pitch. Preserves 100% of the speech content without premature cutoffs.
 
     Args:
         signal: 1D or 2D numpy array of audio PCM samples (int16).
@@ -155,7 +158,7 @@ def time_stretch_audio(signal: np.ndarray, speed: float = 1.28, sample_rate: int
         sample_rate: Audio sampling frequency in Hz (typically 44100).
 
     Returns:
-        np.ndarray: Accelerated int16 audio array with original pitch preserved.
+        np.ndarray: Accelerated int16 audio array with full content and original pitch preserved.
     """
     if abs(speed - 1.0) < 0.02 or len(signal) == 0:
         return signal
@@ -168,14 +171,14 @@ def time_stretch_audio(signal: np.ndarray, speed: float = 1.28, sample_rate: int
     if win_len % 2 != 0:
         win_len += 1
     hop_syn = win_len // 2
-    hop_ana = int(hop_syn * speed)
+    hop_ana = hop_syn * speed
     delta_max = win_len // 4
 
     window = np.hanning(win_len).astype(np.float32)
     window_expanded = window[:, np.newaxis] if is_stereo else window
 
     total_samples = len(signal)
-    num_frames = int((total_samples - win_len - delta_max) / hop_ana)
+    num_frames = int((total_samples - win_len) / (hop_syn * speed)) + 2
     if num_frames <= 0:
         return signal
 
@@ -186,40 +189,44 @@ def time_stretch_audio(signal: np.ndarray, speed: float = 1.28, sample_rate: int
     # Place initial windowed frame
     output[0:win_len] += signal[0:win_len] * window_expanded
     weight[0:win_len] += window
-    prev_ana = 0
-    pos_syn = 0
 
-    for _ in range(1, num_frames):
-        pos_syn += hop_syn
-        target_ana = prev_ana + hop_ana
+    pos_syn = 0
+    prev_actual_ana = 0
+
+    for i in range(1, num_frames):
+        pos_syn = i * hop_syn
+        target_ana = int(i * hop_ana)
 
         search_start = max(0, target_ana - delta_max)
         search_end = min(total_samples - win_len, target_ana + delta_max)
         if search_start >= search_end:
             break
 
-        ref_seg = mono_ref[prev_ana + hop_syn : prev_ana + hop_syn + delta_max]
-        ref_len = len(ref_seg)
-        num_cands = search_end - search_start
-        if num_cands <= 0 or ref_len == 0:
-            break
-
-        # Fast vectorized similarity comparison across candidate shifts
-        cands = np.lib.stride_tricks.as_strided(
-            mono_ref[search_start:],
-            shape=(num_cands, ref_len),
-            strides=(mono_ref.strides[0], mono_ref.strides[0])
-        )
-        diffs = np.sum(np.abs(cands - ref_seg), axis=1)
-        best_cand_idx = int(np.argmin(diffs))
-        actual_ana = search_start + best_cand_idx
+        # Natural continuation segment from the previous analysis frame
+        cont_start = prev_actual_ana + hop_syn
+        if cont_start + delta_max > total_samples:
+            actual_ana = search_start
+        else:
+            ref_seg = mono_ref[cont_start : cont_start + delta_max]
+            ref_len = len(ref_seg)
+            num_cands = search_end - search_start
+            if num_cands <= 0 or ref_len == 0:
+                actual_ana = target_ana
+            else:
+                cands = np.lib.stride_tricks.as_strided(
+                    mono_ref[search_start:],
+                    shape=(num_cands, ref_len),
+                    strides=(mono_ref.strides[0], mono_ref.strides[0])
+                )
+                diffs = np.sum(np.abs(cands - ref_seg), axis=1)
+                actual_ana = search_start + int(np.argmin(diffs))
 
         if actual_ana + win_len > total_samples or pos_syn + win_len > out_len:
             break
 
         output[pos_syn : pos_syn + win_len] += signal[actual_ana : actual_ana + win_len] * window_expanded
         weight[pos_syn : pos_syn + win_len] += window
-        prev_ana = actual_ana
+        prev_actual_ana = actual_ana
 
     valid_weight = weight > 1e-4
     if is_stereo:
@@ -289,9 +296,11 @@ def speak_text(text: str, filename: Optional[str] = None, speed: float = 1.28) -
 
         # Step 5: Play audio locally through host speakers via pygame.mixer Sound
         try:
+            global _ACTIVE_SOUND
             pygame.mixer.stop()
             sound = pygame.sndarray.make_sound(sped_arr)
             sound.set_volume(1.0)
+            _ACTIVE_SOUND = sound
             sound.play()
         except Exception as audio_device_err:
             print(f"[Notice] Pygame audio playback skipped (headless or no soundcard): {audio_device_err}")
