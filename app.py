@@ -44,9 +44,8 @@ load_dotenv()
 
 st.set_page_config(
     page_title="AI Mock Interview Coach",
-    page_icon="🎙️",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 # Initialize the local SQLite database table on startup
@@ -294,66 +293,21 @@ def init_session_state():
 init_session_state()
 
 # -----------------------------------------------------------------------------
-# Sidebar: API Key & System Status
+# API Key Resolution
 # -----------------------------------------------------------------------------
-with st.sidebar:
-    st.title("⚙️ Configuration")
-    st.markdown("Free-tier mock interview coach powered by local RAG & Gemini.")
-
-    detected_key = get_gemini_api_key()
-    if detected_key:
-        st.success("✅ Gemini API Key detected")
-        api_key = detected_key
-    else:
-        st.warning("⚠️ No API Key found in `.env` or Secrets")
-        api_key = st.text_input(
-            "Enter Gemini API Key",
-            type="password",
-            help="Your key is never logged or stored permanently."
-        )
-        if api_key:
-            st.info("API Key entered for this session.")
-        st.session_state.gemini_api_key = api_key
-
-    st.markdown("---")
-    st.markdown("### 🔊 Voice Settings")
-    speech_speed = st.slider(
-        "Interviewer Speech Pace",
-        min_value=1.10,
-        max_value=1.50,
-        value=float(st.session_state.get("speech_speed", 1.28)),
-        step=0.05,
-        help="Fast, conversational human pacing. 1.28x matches natural human interview conversation (~180 words/minute)."
-    )
-    st.session_state.speech_speed = speech_speed
-
-    st.markdown("---")
-    st.markdown("### 🛠️ Technology Stack")
-    st.markdown("- **Frontend**: Streamlit")
-    st.markdown("- **Embeddings**: `all-MiniLM-L6-v2` (Offline)")
-    st.markdown("- **Vector Search**: FAISS IndexFlatIP")
-    st.markdown("- **LLM**: Google Gemini 1.5 Flash (Free tier)")
-    st.markdown("- **Audio**: gTTS + Pygame & SpeechRecognition")
-    st.markdown("- **Database**: Local SQLite")
-
-    st.markdown("---")
-    if st.button("🔄 Reset Interview Session", use_container_width=True):
-        st.session_state.stage = "setup"
-        st.session_state.questions = []
-        st.session_state.current_q_idx = 0
-        st.session_state.last_played_q = -1
-        st.session_state.current_eval = None
-        st.session_state.voice_transcription = ""
-        st.session_state.answer_submitted = False
-        st.rerun()
+detected_key = get_gemini_api_key()
+if detected_key:
+    api_key = detected_key
+else:
+    api_key = st.session_state.get("gemini_api_key", "")
 
 
 # -----------------------------------------------------------------------------
 # Main Navigation Tabs
 # -----------------------------------------------------------------------------
 tab_interview, tab_past_sessions = st.tabs([
-    "🎯 Mock Interview",
-    "📊 Past Sessions & Analytics"
+    "Mock Interview",
+    "Past Sessions and Analytics"
 ])
 
 
@@ -361,18 +315,43 @@ tab_interview, tab_past_sessions = st.tabs([
 # TAB 1: MOCK INTERVIEW
 # =============================================================================
 with tab_interview:
-    st.header("🎙️ AI Mock Interview Coach")
-    st.caption("Upload your resume and a target job description to practice tailored, voice-enabled interview questions.")
+    col_header, col_reset = st.columns([4, 1])
+    with col_header:
+        st.header("AI Mock Interview Coach")
+        st.caption("Upload your resume and a target job description to practice tailored, voice-enabled interview questions.")
+    with col_reset:
+        if st.session_state.stage != "setup":
+            if st.button("Reset Interview", use_container_width=True):
+                st.session_state.stage = "setup"
+                st.session_state.questions = []
+                st.session_state.current_q_idx = 0
+                st.session_state.last_played_q = -1
+                st.session_state.current_eval = None
+                st.session_state.voice_transcription = ""
+                st.session_state.answer_submitted = False
+                st.rerun()
 
     # -------------------------------------------------------------------------
     # STAGE 1: SETUP & ANALYSIS
     # -------------------------------------------------------------------------
     if st.session_state.stage == "setup":
         st.subheader("Step 1: Upload Documents")
+
+        if not detected_key:
+            api_key_input = st.text_input(
+                "Gemini API Key",
+                value=st.session_state.get("gemini_api_key", ""),
+                type="password",
+                help="Your key is never logged or stored permanently."
+            )
+            if api_key_input:
+                st.session_state.gemini_api_key = api_key_input
+                api_key = api_key_input
+
         col_resume, col_jd = st.columns(2)
 
         with col_resume:
-            st.markdown("#### 📄 Your Resume")
+            st.markdown("#### Your Resume")
             resume_file = st.file_uploader(
                 "Upload Resume (PDF format)",
                 type=["pdf"],
@@ -380,16 +359,16 @@ with tab_interview:
             )
 
         with col_jd:
-            st.markdown("#### 💼 Target Job Description")
+            st.markdown("#### Target Job Description")
             jd_input_type = st.radio(
                 "Job Description Format",
-                ["📝 Paste Text", "📎 Upload PDF"],
+                ["Paste Text", "Upload PDF"],
                 horizontal=True
             )
 
             jd_text_input = ""
             jd_file = None
-            if jd_input_type == "📝 Paste Text":
+            if jd_input_type == "Paste Text":
                 jd_text_input = st.text_area(
                     "Paste the job description here:",
                     height=200,
@@ -398,17 +377,28 @@ with tab_interview:
             else:
                 jd_file = st.file_uploader("Upload Job Description (PDF)", type=["pdf"])
 
+        with st.expander("Voice Settings (Optional)", expanded=False):
+            speech_speed = st.slider(
+                "Interviewer Speech Pace",
+                min_value=1.10,
+                max_value=1.50,
+                value=float(st.session_state.get("speech_speed", 1.28)),
+                step=0.05,
+                help="Controls how fast the AI interviewer speaks. 1.28x matches natural human interview conversation (~180 words/minute)."
+            )
+            st.session_state.speech_speed = speech_speed
+
         st.markdown("---")
-        start_btn = st.button("🚀 Analyze Documents & Generate Questions", type="primary", use_container_width=True)
+        start_btn = st.button("Analyze Documents and Generate Questions", type="primary", use_container_width=True)
 
         if start_btn:
             if not api_key:
-                st.error("Please provide a Gemini API Key in `.env` or the sidebar to continue.")
+                st.error("Please provide a Gemini API Key in .env or the text field above to continue.")
             elif not resume_file:
                 st.error("Please upload your resume in PDF format.")
-            elif jd_input_type == "📝 Paste Text" and not jd_text_input.strip():
+            elif jd_input_type == "Paste Text" and not jd_text_input.strip():
                 st.error("Please paste the job description text.")
-            elif jd_input_type == "📎 Upload PDF" and not jd_file:
+            elif jd_input_type == "Upload PDF" and not jd_file:
                 st.error("Please upload the job description PDF.")
             else:
                 with st.spinner("Analyzing resume and job description using local RAG..."):
@@ -417,7 +407,7 @@ with tab_interview:
                     resume_text = parsing.extract_text_from_pdf(resume_bytes)
                     st.session_state.resume_name = resume_file.name
 
-                    if jd_input_type == "📝 Paste Text":
+                    if jd_input_type == "Paste Text":
                         jd_text = parsing.clean_text(jd_text_input)
                         st.session_state.jd_title = "Pasted Job Description"
                     else:
@@ -468,14 +458,14 @@ with tab_interview:
         current_q = questions[q_idx]
 
         # Top RAG Insights Accordion
-        with st.expander("🔍 View Matching Skills & Identified Gaps (RAG Analysis)", expanded=False):
+        with st.expander("View Matching Skills and Identified Gaps (RAG Analysis)", expanded=False):
             col_m, col_g = st.columns(2)
             with col_m:
-                st.markdown("##### 🟢 Matching Skills (Candidate Strengths)")
+                st.markdown("##### Matching Skills (Candidate Strengths)")
                 for item in st.session_state.matching_skills:
                     st.markdown(f"- **Requirement**: {item['jd_chunk'][:120]}... *(Similarity: {item['similarity_score']})*")
             with col_g:
-                st.markdown("##### 🔴 Identified Skill Gaps (Interview Focus)")
+                st.markdown("##### Identified Skill Gaps (Interview Focus)")
                 for item in st.session_state.skill_gaps:
                     st.markdown(f"- **Requirement**: {item['jd_chunk'][:120]}... *(Similarity: {item['similarity_score']})*")
 
@@ -485,7 +475,7 @@ with tab_interview:
 
         # Question Header Box
         st.markdown(f"### Question {q_idx + 1}: *{current_q.get('category', 'Technical')}*")
-        st.info(f"🗣️ **\"{current_q.get('question')}\"**")
+        st.info(f"**\"{current_q.get('question')}\"**")
 
         # Ensure question audio filename is unique to this question, interview session, and speed setting
         speed_factor = float(st.session_state.get("speech_speed", 1.28))
@@ -520,10 +510,10 @@ with tab_interview:
                 # Embed audio player for in-browser playback/review without simultaneous auto-play
                 st.audio(q_audio_bytes, format="audio/wav", autoplay=False)
             else:
-                st.caption("🔊 Audio generating...")
+                st.caption("Audio generating...")
 
         with col_replay:
-            if st.button("🔊 Replay Audio", key=f"replay_btn_{q_idx}"):
+            if st.button("Replay Audio", key=f"replay_btn_{q_idx}"):
                 tts_stt.speak_text(
                     current_q.get("question"),
                     filename=audio_filename,
@@ -536,16 +526,16 @@ with tab_interview:
         # Input Mode Selector
         input_mode = st.radio(
             "Select your answer mode:",
-            ["🎤 Speak your answer", "⌨️ Type your answer"],
+            ["Speak your answer", "Type your answer"],
             horizontal=True
         )
 
         final_answer_text = ""
 
         # VOICE INPUT PATH
-        if input_mode == "🎤 Speak your answer":
-            st.markdown("#### 🎙️ Voice Answer Input")
-            st.info("👇 **Click the microphone icon below to record. Speak your answer, then click stop.** Your speech will be automatically transcribed.")
+        if input_mode == "Speak your answer":
+            st.markdown("#### Voice Answer Input")
+            st.info("**Click the microphone icon below to record. Speak your answer, then click stop.** Your speech will be automatically transcribed.")
 
             # Browser audio recorder with native Start / Stop / Live Timer / Waveform
             recorded_audio = st.audio_input(
@@ -558,22 +548,22 @@ with tab_interview:
                 audio_bytes = recorded_audio.read()
                 audio_hash = f"transcribed_{q_idx}_{len(audio_bytes)}"
                 if st.session_state.get("last_transcribed_hash") != audio_hash:
-                    with st.spinner("🎙️ Transcribing your speech with SpeechRecognition..."):
+                    with st.spinner("Transcribing your speech with SpeechRecognition..."):
                         ok, trans_text = tts_stt.transcribe_audio_bytes(audio_bytes)
                         if ok:
                             st.session_state[f"voice_edit_box_{q_idx}"] = trans_text
                             st.session_state.voice_transcription = trans_text
                             st.session_state["last_transcribed_hash"] = audio_hash
-                            st.success("✅ Transcribed successfully! Review or edit below:")
+                            st.success("Transcribed successfully! Review or edit below:")
                             st.rerun()
                         else:
-                            st.warning(f"⚠️ {trans_text}")
+                            st.warning(f"{trans_text}")
 
             col_ans_header, col_ans_clear = st.columns([3, 1])
             with col_ans_header:
                 st.markdown("**Your Transcribed Answer** *(feel free to review or edit before submitting):*")
             with col_ans_clear:
-                if st.button("🗑️ Clear Answer", key=f"clear_btn_{q_idx}"):
+                if st.button("Clear Answer", key=f"clear_btn_{q_idx}"):
                     st.session_state[f"voice_edit_box_{q_idx}"] = ""
                     st.session_state.voice_transcription = ""
                     st.rerun()
@@ -601,7 +591,7 @@ with tab_interview:
         # SUBMIT AND EVALUATE
         col_submit, _ = st.columns([1, 2])
         with col_submit:
-            submit_btn = st.button("✅ Submit Answer for Evaluation", type="primary")
+            submit_btn = st.button("Submit Answer for Evaluation", type="primary")
 
         if submit_btn:
             if not final_answer_text or not final_answer_text.strip():
@@ -634,7 +624,7 @@ with tab_interview:
         # Display Evaluation if available for this question
         if st.session_state.current_eval:
             eval_data = st.session_state.current_eval
-            st.markdown("#### 📋 Interviewer Evaluation")
+            st.markdown("#### Interviewer Evaluation")
             score_col, feedback_col = st.columns([1, 3])
             with score_col:
                 score_val = eval_data["score"]
@@ -645,14 +635,14 @@ with tab_interview:
             st.markdown("---")
             # Next Question or Finish Button
             if q_idx < len(questions) - 1:
-                if st.button("Next Question ➡️", type="primary"):
+                if st.button("Next Question", type="primary"):
                     st.session_state.current_q_idx += 1
                     st.session_state.current_eval = None
                     st.session_state.voice_transcription = ""
                     st.session_state.answer_submitted = False
                     st.rerun()
             else:
-                if st.button("🏁 Finish Interview & View Summary", type="primary"):
+                if st.button("Finish Interview and View Summary", type="primary"):
                     st.session_state.stage = "completed"
                     st.rerun()
 
@@ -661,11 +651,11 @@ with tab_interview:
     # -------------------------------------------------------------------------
     elif st.session_state.stage == "completed":
         st.balloons()
-        st.success("🎉 Congratulations! You have completed the 5-question mock interview!")
+        st.success("Congratulations! You have completed the 5-question mock interview.")
         st.markdown("All your questions, answers, and scores have been logged to your local SQLite database.")
 
         st.subheader("What's Next?")
-        st.markdown("- Switch to the **'📊 Past Sessions & Analytics'** tab to inspect your performance trend.")
+        st.markdown("- Switch to the **'Past Sessions and Analytics'** tab to inspect your performance trend.")
         st.markdown("- Practice again with another job description to strengthen your gap areas.")
 
         if st.button("Start Another Interview"):
@@ -682,11 +672,11 @@ with tab_interview:
 # TAB 2: PAST SESSIONS & PROGRESS DASHBOARD
 # =============================================================================
 with tab_past_sessions:
-    st.header("📊 Past Sessions & Progress Dashboard")
+    st.header("Past Sessions and Progress Dashboard")
     st.caption("Track your interview preparation history, score progression, and input modes over time.")
 
     # Refresh button
-    if st.button("🔄 Refresh Data"):
+    if st.button("Refresh Data"):
         st.rerun()
 
     # Aggregate SQLite statistics
@@ -700,7 +690,7 @@ with tab_past_sessions:
     with m_col3:
         st.metric("Highest Score", f"{stats['highest_score']} / 10")
     with m_col4:
-        st.metric("Mode Breakdown", f"🎤 {stats['voice_count']} | ⌨️ {stats['text_count']}")
+        st.metric("Mode Breakdown", f"Voice: {stats['voice_count']} | Text: {stats['text_count']}")
 
     st.markdown("---")
 
@@ -711,7 +701,7 @@ with tab_past_sessions:
         st.info("No past interview sessions logged yet. Complete an interview to see your progress chart!")
     else:
         # Score trend line chart over time
-        st.subheader("📈 Score Progression Over Time")
+        st.subheader("Score Progression Over Time")
         # Prepare chronologically sorted data for trend plotting
         chart_df = df_sessions.sort_values(by="id", ascending=True).copy()
         chart_df["Attempt #"] = range(1, len(chart_df) + 1)
@@ -725,7 +715,7 @@ with tab_past_sessions:
         )
 
         st.markdown("---")
-        st.subheader("📝 Detailed Past Interview Logs")
+        st.subheader("Detailed Past Interview Logs")
         
         # Allow searching/filtering the table
         search_term = st.text_input("Search questions or answers:", placeholder="e.g. Python, Docker, Behavioral...")
