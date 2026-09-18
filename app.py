@@ -632,23 +632,34 @@ with tab_interview:
         st.markdown(f"### Question {q_idx + 1}: *{current_q.get('category', 'Technical')}*")
         st.info(f"**\"{current_q.get('question')}\"**")
 
-        # Question audio: In-browser streaming with nodownload controls & zero disk files
+        # Question audio: In-memory voice playback and browser streaming with zero disk files
         speed_factor = float(st.session_state.get("speech_speed", 1.28))
+
+        # Speak question aloud through host speakers upon arrival
+        if st.session_state.last_played_q != q_idx:
+            st.session_state.last_played_q = q_idx
+            tts_stt.speak_text(current_q.get("question"), speed=speed_factor)
+
+        # In-browser audio element and replay button (nodownload controls & zero disk files)
         if f"q_b64_{q_idx}" not in st.session_state:
-            with st.spinner("Preparing question audio..."):
-                b64_str = tts_stt.get_audio_base64(current_q.get("question"), speed=speed_factor)
-                st.session_state[f"q_b64_{q_idx}"] = b64_str
+            b64_str = tts_stt.get_audio_base64(current_q.get("question"), speed=speed_factor)
+            st.session_state[f"q_b64_{q_idx}"] = b64_str
 
         b64_audio = st.session_state.get(f"q_b64_{q_idx}", "")
-        if b64_audio:
-            st.markdown(
-                f"""
-                <audio autoplay controls controlslist="nodownload noplaybackrate" style="width: 100%; height: 38px; margin-bottom: 10px;">
-                    <source src="data:audio/wav;base64,{b64_audio}" type="audio/wav">
-                </audio>
-                """,
-                unsafe_allow_html=True
-            )
+        col_audio, col_replay = st.columns([3, 1])
+        with col_audio:
+            if b64_audio:
+                st.markdown(
+                    f"""
+                    <audio controls controlslist="nodownload noplaybackrate" style="width: 100%; height: 38px;">
+                        <source src="data:audio/wav;base64,{b64_audio}" type="audio/wav">
+                    </audio>
+                    """,
+                    unsafe_allow_html=True
+                )
+        with col_replay:
+            if st.button("Replay Audio", key=f"replay_btn_{q_idx}", use_container_width=True):
+                tts_stt.speak_text(current_q.get("question"), speed=speed_factor)
 
         st.markdown("---")
 
